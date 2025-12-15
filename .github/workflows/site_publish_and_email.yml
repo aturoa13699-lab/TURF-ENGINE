@@ -17,6 +17,7 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
   MAIL_FROM: ${{ vars.MAIL_FROM || '' }}
   MAIL_TO: ${{ vars.MAIL_TO || '' }}
 
@@ -49,7 +50,7 @@ jobs:
 
       - name: Generate demo stake cards
         run: |
-          python cli/turf_cli.py demo-run --date "${{ steps.date.outputs.run_date }}" --out out/cards
+          python -m cli.turf_cli demo-run --date "${{ steps.date.outputs.run_date }}" --out out/cards
 
       - name: Render static site
         run: |

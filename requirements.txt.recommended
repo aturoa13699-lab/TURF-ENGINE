@@ -1,5 +1,0 @@
-pydantic>=2.12.5
-rapidfuzz>=3.14.3
-typer>=0.20.0
-rich>=14.2.0
-selectolax>=0.4.6
