@@ -1,0 +1,73 @@
+name: TURF ENGINE LITE — Daily
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Run date (YYYY-MM-DD, Australia/Sydney). Defaults to today."
+        required: false
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
+      EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+      EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Resolve run date (Australia/Sydney)
+        id: rundate
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            RUN_DATE="${{ github.event.inputs.date }}"
+          else
+            RUN_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
+          fi
+          echo "RUN_DATE=${RUN_DATE}" >> $GITHUB_ENV
+          echo "run_date=${RUN_DATE}" >> $GITHUB_OUTPUT
+          echo "Resolved RUN_DATE=${RUN_DATE}"
+
+      - name: Run daily pipeline
+        run: |
+          ./scripts/run_turf_daily.sh "$RUN_DATE"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: turf-daily-${{ steps.rundate.outputs.run_date }}
+          path: out
+
+      - name: Send email summary
+        if: env.EMAIL_SERVER != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.EMAIL_SERVER }}
+          server_port: ${{ env.EMAIL_PORT || 587 }}
+          username: ${{ env.EMAIL_USERNAME }}
+          password: ${{ env.EMAIL_PASSWORD }}
+          subject: "TURF ENGINE LITE daily summary (${{ steps.rundate.outputs.run_date }})"
+          to: ${{ env.EMAIL_TO }}
+          from: ${{ env.EMAIL_FROM }}
+          content_type: text/html
+          secure: starttls
+          body: file://out/email/rendered_summary.html

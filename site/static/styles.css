@@ -1,0 +1,80 @@
+:root {
+  --bg: #0f172a;
+  --panel: #111827;
+  --text: #e5e7eb;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --border: #1f2937;
+  --a-lite: #34d399;
+  --b-lite: #fbbf24;
+  --pass: #ef4444;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar a { color: var(--accent); text-decoration: none; margin-left: 12px; }
+.brand { font-weight: 700; letter-spacing: 0.03em; }
+
+main {
+  max-width: 1100px;
+  margin: 24px auto;
+  padding: 0 16px 32px;
+}
+
+h1 { margin: 8px 0 12px; }
+.meta { color: var(--muted); margin: 4px 0 12px; }
+
+.table-wrap { overflow-x: auto; }
+table.runners {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+table.runners th, table.runners td {
+  padding: 10px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+table.runners th { background: #0b1220; color: var(--muted); font-size: 0.9rem; }
+table.runners td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+table.runners tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+
+.badge-a { background: rgba(52,211,153,0.15); color: var(--a-lite); }
+.badge-b { background: rgba(251,191,36,0.15); color: var(--b-lite); }
+.badge-pass { background: rgba(239,68,68,0.15); color: var(--pass); }
+
+.footer {
+  text-align: center;
+  padding: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}

@@ -1,0 +1,1258 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<turf_lite_bundle
+  bundle_id="TURF_ENGINE_LITE_BUNDLE_AU"
+  bundle_version="0.2.1p2"
+  engine_compat="TURF_ENGINE_AU_V1.4"
+  role="PRE_RACE_STAKE_CARD_LANE"
+  mode="CONSUMER_ENGINE_ONLY">
+
+  <!-- ===================================================== -->
+  <!-- 0) BUNDLE MANIFEST (0.2.1p2)                           -->
+  <!-- ===================================================== -->
+  <bundle_manifest>
+    <module id="TURF_ENGINE_LITE_README" version="0.2.1"/>
+    <module id="TURF_ENGINE_LITE_CONTRACT" version="0.2.1p2"/>
+    <module id="TURF_ENGINE_LITE_MATH_SPEC" version="0.2.1"/>
+    <module id="TURF_LITE_COMPILER_BUNDLE" version="0.2.1p2"/>
+    <module id="TURF_LITE_OPERATOR_HANDBOOK" version="0.2.1p2"/>
+    <module id="TURF_LITE_SHAPES_JSON_SCHEMA_MIRRORS" version="0.2.1p2"/>
+    <module id="TURF_STAKE_CARD_LITE_FIELDS_PATCH" version="0.1.0"/>
+    <module id="TURF_LITE_FEATURE_CATALOG" version="0.2.1p2"/>
+    <module id="TURF_LITE_HELLO_WORLD_SAMPLES" version="0.2.1p2"/>
+    <module id="TURF_ENGINE_LITE_MICRO_PATCH" version="0.2.1p2"/>
+
+    <!-- PRO overlay additions -->
+    <module id="TURF_RUNNER_VECTOR_SPEC" version="0.1.0"/>
+    <module id="TURF_ENGINE_PRO_OVERLAY" version="0.1.0"/>
+  </bundle_manifest>
+
+  <!-- ===================================================== -->
+  <!-- 1) TURF_ENGINE_LITE_README (0.2.1)                     -->
+  <!-- ===================================================== -->
+  <turf_engine_lite_readme module_id="TURF_ENGINE_LITE_README" version="0.2.1" engine_compat="TURF_ENGINE_AU_V1.4">
+    <purpose>
+      <goal>
+        Emit a deterministic turf.stake_card.v1 for target races using only:
+        - turf.market_snapshot.v1 (LITE subset)
+        - turf.runner_speed_derived.v1 sidecar (LITE subset)
+        - OPTIONAL: turf.lite_features.v1 (DISPLAY_ONLY or deterministic tie gate only)
+      </goal>
+      <non_goals>
+        <item>Do NOT claim to be a full TURF_ENGINE_AU_V1.4 run.</item>
+        <item>Do NOT compute or populate canonical vectors V1N-V7N.</item>
+        <item>Do NOT infer speed_figure or class lattice without required tables.</item>
+      </non_goals>
+    </purpose>
+
+    <core_invariants>
+      <rule id="NO_SCORING_FROM_FEATURES_0_2_X">
+        In 0.2.x, lite_features are DISPLAY_ONLY and/or deterministic tie-break only.
+        They MUST NOT contribute to LiteScore weights or tier thresholds.
+      </rule>
+      <rule id="FAIL_CLOSED">
+        Missing inputs MUST neutralize deterministically (typically 0.50), never guessed.
+      </rule>
+      <rule id="ORDERING_SOURCE_OF_TRUTH">
+        Runner ordering is determined by LiteScore and the tie-break gate only.
+        forecast.* fields are overlay-only and MUST NOT alter ordering.
+      </rule>
+    </core_invariants>
+  </turf_engine_lite_readme>
+
+  <!-- ===================================================== -->
+  <!-- 2) TURF_ENGINE_LITE_CONTRACT (0.2.1p2)                 -->
+  <!-- ===================================================== -->
+  <turf_engine_lite_contract
+    module_id="TURF_ENGINE_LITE_CONTRACT"
+    contract_id="TURF_ENGINE_LITE_AU_CHAT_CONTRACT"
+    contract_version="0.2.1p2"
+    engine_compat="TURF_ENGINE_AU_V1.4"
+    role="PRE_RACE_STAKE_CARD_LANE"
+    mode="CONSUMER_ENGINE_ONLY">
+
+    <!-- --------------------- -->
+    <!-- Constants + Definitions -->
+    <!-- --------------------- -->
+    <constants>
+      <lite_score_weights>
+        <w id="MarketRankN">0.45</w>
+        <w id="MapAdvN">0.35</w>
+        <w id="SpeedProxyN">0.20</w>
+      </lite_score_weights>
+
+      <tier_thresholds>
+        <A_LITE min_inclusive="0.68"/>
+        <B_LITE min_inclusive="0.58" max_exclusive="0.68"/>
+        <PASS_LITE max_exclusive="0.58"/>
+      </tier_thresholds>
+
+      <!-- ===== 0.2.1p2: normative definitions (applies bundle-wide) ===== -->
+      <normative_definitions version="0.2.1p2">
+        <term id="finite_number">not null, not NaN, not +Infinity, not -Infinity</term>
+        <term id="valid_price_rule">price_now_dec is a finite_number and > 1.0</term>
+        <term id="valid_speed_rule">avg_speed_mps is a finite_number and >= 0</term>
+        <term id="present_barrier_rule">barrier is a finite_number and >= 1</term>
+      </normative_definitions>
+    </constants>
+
+    <!-- --------------------- -->
+    <!-- Deterministic Degrade Modes (TOTAL) -->
+    <!-- --------------------- -->
+    <degrade_mode_rules version="0.2.1p2">
+      <mode id="NORMAL">
+        <when>
+          <rule>At least one runner satisfies valid_price_rule</rule>
+          <rule>AND at least one sidecar row successfully joins on (meeting_id, race_number, runner_number)</rule>
+        </when>
+      </mode>
+
+      <mode id="MARKET_ONLY">
+        <when>
+          <rule>Sidecar file missing OR zero sidecar rows successfully join</rule>
+        </when>
+      </mode>
+
+      <mode id="PARTIAL_SIDECAR">
+        <when>
+          <rule>Some (but not all) sidecar rows join</rule>
+          <rule>OR fewer than 3 runners satisfy valid_speed_rule (SpeedProxyN neutralized)</rule>
+          <rule>OR zero runners satisfy valid_price_rule (MarketRankN neutralized)</rule>
+        </when>
+      </mode>
+    </degrade_mode_rules>
+
+    <!-- ===== 0.2.1p2: deterministic mode selection precedence ===== -->
+    <degrade_mode_selection version="0.2.1p2" policy="FIRST_MATCH">
+      <order>
+        <mode>MARKET_ONLY</mode>
+        <mode>NORMAL</mode>
+        <mode>PARTIAL_SIDECAR</mode>
+      </order>
+    </degrade_mode_selection>
+
+    <!-- --------------------- -->
+    <!-- Warnings (bounded + deterministic triggers + emission policy) -->
+    <!-- --------------------- -->
+    <warnings_enumeration version="0.2.1p2">
+      <warning id="JOIN_MISS"/>
+      <warning id="ALL_PRICES_INVALID"/>
+      <warning id="SOME_PRICES_INVALID"/>
+      <warning id="FEW_VALID_SPEEDS_NEUTRALIZED"/>
+      <warning id="FEATURE_ROW_PROVENANCE_MISSING"/>
+      <warning id="FEATURE_ROW_DROPPED"/>
+      <warning id="FEATURE_TIE_GATE_USED"/>
+    </warnings_enumeration>
+
+    <warning_triggers version="0.2.1p2">
+      <map id="ALL_PRICES_INVALID">
+        <when>zero runners satisfy valid_price_rule</when>
+      </map>
+      <map id="SOME_PRICES_INVALID">
+        <when>at least one runner satisfies valid_price_rule AND at least one does not</when>
+      </map>
+      <map id="FEW_VALID_SPEEDS_NEUTRALIZED">
+        <when>fewer than 3 runners satisfy valid_speed_rule in the race</when>
+      </map>
+      <map id="JOIN_MISS">
+        <when>any runner fails to join sidecar on (meeting_id, race_number, runner_number)</when>
+      </map>
+      <map id="FEATURE_ROW_PROVENANCE_MISSING">
+        <when>lite_features present AND any feature row lacks provenance</when>
+      </map>
+      <map id="FEATURE_ROW_DROPPED">
+        <when>engine drops a lite_features row (e.g., missing provenance)</when>
+      </map>
+      <map id="FEATURE_TIE_GATE_USED">
+        <when>feature_tiebreak_gate executes at least one key for final ordering</when>
+      </map>
+    </warning_triggers>
+
+    <warnings_emission_policy version="0.2.1p2">
+      <rule>engine_context.warnings MUST contain unique warning IDs only (set semantics).</rule>
+      <rule>Emit warnings sorted by warning ID ascending (stable, lexicographic order).</rule>
+    </warnings_emission_policy>
+
+    <!-- --------------------- -->
+    <!-- Metrics (LITE) -->
+    <!-- --------------------- -->
+    <metrics>
+
+      <!-- B) REPLACE — MarketRankN formula (valid prices only) -->
+      <metric id="MarketRankN" algorithm="IMPLIED_PROB_NORMALIZED">
+        <invalid_price_tests>
+          <rule>NOT valid_price_rule</rule>
+        </invalid_price_tests>
+        <formula><![CDATA[
+# Compute implied probabilities ONLY for runners with valid_price_rule.
+# Let V = { i | price_now_dec_i satisfies valid_price_rule }.
+
+For i in V:
+  p_i = 1.0 / price_now_dec_i
+
+O = sum_{j in V} p_j
+
+For i in V:
+  MarketRankN_i = p_i / O
+
+For i not in V:
+  MarketRankN_i = 0.50
+]]></formula>
+        <degrade_rules>
+          <rule>If V is empty (no valid prices): MarketRankN_i = 0.50 for all runners.</rule>
+        </degrade_rules>
+      </metric>
+
+      <metric id="SpeedProxyN" algorithm="MIN_MAX_WITH_NEUTRAL">
+        <inputs_required>
+          <item>avg_speed_mps (from sidecar)</item>
+        </inputs_required>
+        <invalid_speed_tests>
+          <rule>NOT valid_speed_rule</rule>
+        </invalid_speed_tests>
+        <degrade_rules>
+          <rule>If fewer than 3 runners satisfy valid_speed_rule: SpeedProxyN_i = 0.50 for all runners.</rule>
+        </degrade_rules>
+      </metric>
+
+      <metric id="MapAdvN" algorithm="BARRIER_PLUS_ROLE_PROXY">
+        <note>
+          Use ONLY PRESENT barriers for ranking (not ranked if missing). Others => barrier_delta = 0.0.
+        </note>
+        <inputs_required>
+          <item>barrier (from market)</item>
+          <item>map_role_inferred (from sidecar, UNKNOWN if missing)</item>
+        </inputs_required>
+      </metric>
+
+      <metric id="LiteScore" algorithm="WEIGHTED_SUM_3">
+        <formula><![CDATA[
+LiteScore_i = 0.45*MarketRankN_i + 0.35*MapAdvN_i + 0.20*SpeedProxyN_i
+]]></formula>
+      </metric>
+
+      <metric id="LiteTag" algorithm="THRESHOLD_BANDS">
+        <formula><![CDATA[
+If LiteScore_i >= 0.68 => A_LITE
+Else if LiteScore_i >= 0.58 => B_LITE
+Else => PASS_LITE
+]]></formula>
+      </metric>
+
+    </metrics>
+
+    <!-- --------------------- -->
+    <!-- Feature tie gate (unchanged list) -->
+    <!-- --------------------- -->
+    <feature_tiebreak_gate version="0.2.1">
+      <ordering_keys>
+        <key>M_RWE</key>
+        <key>M_ABF</key>
+        <key>CCC_i</key>
+      </ordering_keys>
+      <rule>Only used when LiteScore tie bucket requires deterministic ordering.</rule>
+      <rule>When used at least once, emit warning FEATURE_TIE_GATE_USED.</rule>
+    </feature_tiebreak_gate>
+
+    <!-- H) Feature catalog consistency - CCC_i contract -->
+    <value_contract version="0.2.1p2" feature="CCC_i">
+      <rule>If barrier is rankable: emit CCC_i in [0.0, 1.0] (barrier_rank_pct), quality=MEDIUM_CONF.</rule>
+      <rule>Else: value=null, quality=UNKNOWN.</rule>
+    </value_contract>
+
+    <!-- --------------------- -->
+    <!-- Engine context outputs + hashing (0.2.1p2) -->
+    <!-- --------------------- -->
+    <outputs>
+      <engine_context_required>
+        <field name="engine_spec_id" value="TURF_ENGINE_LITE_AU"/>
+        <field name="engine_version" value="0.2.1p2"/>
+        <field name="lite_version" value="0.2.1p2"/>
+        <field name="degrade_mode" value="NORMAL|MARKET_ONLY|PARTIAL_SIDECAR"/>
+        <field name="warnings" value="sorted unique warning IDs"/>
+        <field name="inputs_hash"
+               value="SHA256 over canonical JSON of inputs (market, sidecar, features if present);
+                      canonical JSON = UTF-8; object keys sorted ascending; arrays preserved in source order;
+                      numbers serialized with a stable decimal representation (no locale, no scientific notation unless required);
+                      whitespace-insensitive."/>
+      </engine_context_required>
+
+      <!-- Stake card output patch: forecast overlay fields -->
+      <stake_card_output_patch version="0.2.1p2">
+        <mapping_rules>
+          <rule>forecast.* fields are overlay-only: they must not influence lite_score, lite_tag, or runner ordering.</rule>
+        </mapping_rules>
+
+        <add_field path="races[].runners[].forecast" type="object_or_null">
+          <fields>
+            <field name="win_prob" type="number_or_null"/>
+            <field name="place_prob" type="number_or_null"/>
+            <field name="market_prob" type="number_or_null"/>
+            <field name="value_edge" type="number_or_null"/>
+            <field name="ev_1u" type="number_or_null"/>
+            <field name="certainty" type="number_or_null"/>
+          </fields>
+        </add_field>
+
+        <add_field path="engine_context.forecast_params" type="object_or_null">
+          <fields>
+            <field name="tau" type="number_or_null"/>
+            <field name="alpha" type="number_or_null"/>
+            <field name="tier_prior_policy" type="string_or_null"/>
+            <field name="market_prob_basis" type="string_or_null"/>
+            <field name="notes" type="string_or_null"/>
+          </fields>
+        </add_field>
+
+        <!-- recommended debug stamps -->
+        <add_field path="engine_context.debug.overlay_writer" type="string_or_null"/>
+        <add_field path="engine_context.debug.runner_vector_checksum" type="string_or_null"/>
+      </stake_card_output_patch>
+    </outputs>
+
+    <!-- --------------------- -->
+    <!-- Join-miss observability -->
+    <!-- --------------------- -->
+    <output_observability version="0.2.1p2">
+      <rule>
+        When a sidecar row is missing for a runner (JOIN_MISS),
+        echo map_role_inferred="UNKNOWN" (not null) in any engine_inputs_passthrough/debug blocks.
+      </rule>
+    </output_observability>
+
+    <!-- --------------------- -->
+    <!-- Single-writer overlay policy -->
+    <!-- --------------------- -->
+    <overlay_single_writer_policy version="0.2.1p2">
+      <rule>If TURF_ENGINE_PRO_OVERLAY is executed, do NOT execute any other forecast wrapper in the same pass.</rule>
+      <rule>Implementations SHOULD enforce an overlay_written boolean guard.</rule>
+    </overlay_single_writer_policy>
+
+  </turf_engine_lite_contract>
+
+  <!-- ===================================================== -->
+  <!-- 3) TURF_LITE_FEATURE_CATALOG (0.2.1p2)                 -->
+  <!-- ===================================================== -->
+  <turf_lite_feature_catalog module_id="TURF_LITE_FEATURE_CATALOG" version="0.2.1p2">
+    <rules>
+      <rule>Features are DISPLAY_ONLY unless explicitly listed in feature_tiebreak_gate keys.</rule>
+      <rule>DISPLAY_ONLY features MUST NOT affect LiteScore weights or tiers.</rule>
+      <rule>All feature rows MUST carry provenance; missing provenance triggers FEATURE_ROW_PROVENANCE_MISSING and row may be dropped.</rule>
+    </rules>
+
+    <!-- ===== 0.2.1p2: race-level physics (display only) ===== -->
+    <race_level_features>
+      <feature id="M_SHEAR_VAL" name="ShearValue" usage_mode="DISPLAY_ONLY">
+        <inputs_required>track_shear</inputs_required>
+        <fallback value="null" quality="UNKNOWN"/>
+      </feature>
+
+      <feature id="M_GOINGSTICK_VAL" name="GoingStickValue" usage_mode="DISPLAY_ONLY">
+        <inputs_required>going_stick</inputs_required>
+        <fallback value="null" quality="UNKNOWN"/>
+      </feature>
+
+      <feature id="M_SPR" name="ShearPenetrometerRatio" usage_mode="DISPLAY_ONLY">
+        <inputs_required>track_shear, track_penetrometer</inputs_required>
+        <fallback value="null" quality="UNKNOWN"/>
+      </feature>
+    </race_level_features>
+
+    <!-- ===== 0.2.1p2: runner-level from form lines (display only) ===== -->
+    <runner_level_features>
+      <feature id="M_FSP" name="FinishingSpeedPct" usage_mode="DISPLAY_ONLY">
+        <inputs_required>race_distance_m, gross_time_s, sectional600_s</inputs_required>
+        <quality_rules>
+          <rule>If all inputs finite: quality=MEDIUM_CONF.</rule>
+          <rule>Else: value=null, quality=UNKNOWN.</rule>
+        </quality_rules>
+      </feature>
+
+      <feature id="M_EI" name="EfficiencyIndex" usage_mode="DISPLAY_ONLY">
+        <inputs_required>race_distance_m, gross_time_s, sectional600_s</inputs_required>
+        <quality_rules>
+          <rule>If all inputs finite: quality=MEDIUM_CONF.</rule>
+          <rule>Else: value=null, quality=UNKNOWN.</rule>
+        </quality_rules>
+      </feature>
+
+      <feature id="M_TRI" name="TrafficRiskIndex" usage_mode="DISPLAY_ONLY">
+        <inputs_required>pos800, pos400, field_size</inputs_required>
+        <quality_rules>
+          <rule>If all inputs finite: quality=MEDIUM_CONF.</rule>
+          <rule>Else: value=null, quality=UNKNOWN.</rule>
+        </quality_rules>
+      </feature>
+
+      <feature id="M_HER" name="HandicapEfficiencyRatio" usage_mode="DISPLAY_ONLY">
+        <inputs_required>benchmark_rating, true_weight_kg</inputs_required>
+        <quality_rules>
+          <rule>If both inputs finite: quality=HIGH_CONF.</rule>
+          <rule>Else: value=null, quality=UNKNOWN.</rule>
+        </quality_rules>
+      </feature>
+
+      <feature id="M_HSM" name="HealthStatusModifier" usage_mode="DISPLAY_ONLY">
+        <inputs_required>gear_keywords_text</inputs_required>
+        <quality_rules>
+          <rule>If keywords confidently extracted: quality=MEDIUM_CONF.</rule>
+          <rule>Else: value=null, quality=UNKNOWN.</rule>
+        </quality_rules>
+      </feature>
+
+      <feature id="M_ODX" name="OddsDriftIndex" usage_mode="DISPLAY_ONLY">
+        <inputs_required>odds_history_string</inputs_required>
+        <quality_rules>
+          <rule>If open and SP parseable as decimals: quality=MEDIUM_CONF.</rule>
+          <rule>Else: value=null, quality=UNKNOWN.</rule>
+        </quality_rules>
+      </feature>
+    </runner_level_features>
+  </turf_lite_feature_catalog>
+
+  <!-- ===================================================== -->
+  <!-- 4) TURF_LITE_COMPILER_BUNDLE (0.2.1p2)                 -->
+  <!-- ===================================================== -->
+  <turf_lite_compiler_bundle module_id="TURF_LITE_COMPILER_BUNDLE" version="0.2.1p2">
+    <parsing_cues_ra_txt>
+
+      <physics_header>
+        <rule>Going Stick: ^.*Going\s*Stick[-:\s]*([0-9]+(?:\.[0-9]+)?)</rule>
+        <rule>Shear: ^.*Shear[-:\s]*([0-9]+(?:\.[0-9]+)?)</rule>
+        <rule>Penetrometer: ^.*Penetrometer[-:\s]*([0-9]+(?:\.[0-9]+)?)</rule>
+      </physics_header>
+
+      <sectionals_and_flow>
+        <rule>Final 600m: "\(600m\s*([0-9]{2}\.[0-9]{1,2})\)" => sectional600_s</rule>
+        <rule>Pos@800m: "(\d+)(?:st|nd|rd|th)@800m" => pos800</rule>
+        <rule>Pos@400m: "(\d+)(?:st|nd|rd|th)@400m" => pos400</rule>
+        <rule>Gross time: "\b(\d{1}:\d{2}\.\d{2})\b" => mm:ss.xx to seconds</rule>
+      </sectionals_and_flow>
+
+      <weights_true>
+        <rule>TRUE WEIGHT: capture table column if present; else null</rule>
+        <rule>Benchmark rating: capture from runner header if present; else null</rule>
+      </weights_true>
+
+      <gear_health>
+        <rule>Keywords: "Concussion Plates", "Synthetic Hoof Filler", "Glue[- ]on Shoes" (case-insensitive)</rule>
+      </gear_health>
+
+      <!-- Odds parser hint (explicit F/f suffix + cents like $3.30F) -->
+      <odds_history>
+        <rule>
+          Odds string: "\$[0-9]+(?:\.[0-9]+)?(?:/\$[0-9]+(?:\.[0-9]+)?)+[Ff]?"
+          capture first as open and last as SP (allow trailing F/f).
+        </rule>
+      </odds_history>
+
+    </parsing_cues_ra_txt>
+
+    <feature_emission_rules version="0.2.1p2">
+      <race_level>
+        <rule>Emit M_SHEAR_VAL, M_GOINGSTICK_VAL, M_SPR with provenance from meeting header.</rule>
+      </race_level>
+      <runner_level>
+        <rule>Emit M_FSP and M_EI only if (gross_time_s AND sectional600_s) present and finite.</rule>
+        <rule>Emit M_TRI only if (pos800 AND pos400 AND field_size) present.</rule>
+        <rule>Emit M_HER only if (benchmark_rating AND true_weight_kg) present and finite.</rule>
+        <rule>Emit M_HSM if any gear keyword found; else null.</rule>
+        <rule>Emit M_ODX only if both open and SP parsed as decimals.</rule>
+      </runner_level>
+    </feature_emission_rules>
+  </turf_lite_compiler_bundle>
+
+  <!-- ===================================================== -->
+  <!-- 5) TURF_RUNNER_VECTOR_SPEC + PRO OVERLAY (0.1.0)       -->
+  <!-- ===================================================== -->
+
+  <turf_runner_vector_spec module_id="TURF_RUNNER_VECTOR_SPEC" version="0.1.0">
+    <note>
+      Build turf.runner_vector.v1 deterministically per runner using free inputs:
+      market snapshot + sidecar + optional DISPLAY_ONLY features. Missing inputs neutralize to 0.5
+      (or UNKNOWN one-hot). This spec is for the PRO overlay only (ordering isolated).
+    </note>
+  </turf_runner_vector_spec>
+
+  <turf_engine_pro_overlay module_id="TURF_ENGINE_PRO_OVERLAY" module_version="0.1.0" role="OVERLAY_ONLY" deterministic="true">
+    <model_spec id="LOGIT_WIN_PLACE_v0" version="0.1.0">
+      <coefficients>
+        <b0>-0.20</b0>
+        <w name="market_prob"> 1.40</w>
+        <w name="lite_score">  1.10</w>
+        <w name="barrier_pct">-0.25</w>
+        <w name="speed_norm">   0.55</w>
+        <w name="days_since_run_norm">-0.15</w>
+        <w name="field_size_norm">-0.10</w>
+        <w name="distance_suit_norm">0.35</w>
+        <w name="weight_eff_norm">0.30</w>
+        <w name="class_delta_norm">0.28</w>
+        <w name="last600_eff_norm">0.45</w>
+        <w name="pos_delta_norm">  0.20</w>
+        <w name="jockey_sr_norm">  0.18</w>
+        <w name="trainer_sr_norm"> 0.12</w>
+        <w name="gear_health_norm">0.08</w>
+        <w name="map_role_onehot[0]">0.18</w>
+        <w name="map_role_onehot[1]">0.10</w>
+        <w name="map_role_onehot[2]">0.00</w>
+        <w name="map_role_onehot[3]">-0.12</w>
+        <w name="map_role_onehot[4]">0.00</w>
+        <w name="track_condition_onehot[0]"> 0.05</w>
+        <w name="track_condition_onehot[1]"> 0.00</w>
+        <w name="track_condition_onehot[2]">-0.03</w>
+        <w name="track_condition_onehot[3]">-0.06</w>
+        <w name="track_condition_onehot[4]"> 0.00</w>
+        <w name="track_condition_onehot[5]"> 0.00</w>
+      </coefficients>
+
+      <calibration policy="SOFTMAX_NORMALIZE" tau="0.12">
+        <formula><![CDATA[
+z_i = b0 + sum_k w_k * x_{i,k}
+s_i = logistic(z_i)
+p_win_i = softmax(s_i, tau)
+]]></formula>
+        <degrade_rules>
+          <rule>if ALL_PRICES_INVALID: set x.market_prob = 1/N for all; proceed.</rule>
+          <rule>if FEW_VALID_SPEEDS_NEUTRALIZED: set speed_norm = 0.5 for all.</rule>
+        </degrade_rules>
+      </calibration>
+
+      <place_probability approximation="HARVILLE_2">
+        <formula><![CDATA[
+P2_i ≈ Σ_{k≠i} p_win_k * (p_win_i / (1 - p_win_k))
+PlaceProb_i = clamp(p_win_i + P2_i, 0, 1)
+]]></formula>
+      </place_probability>
+
+      <value_fields>
+        <field name="market_prob"  source="RunnerVector.x.market_prob"/>
+        <field name="value_edge">  p_win_i - market_prob_i </field>
+        <field name="ev_1u">       if valid_price(price_now_dec_i): p_win_i*(price_now_dec_i-1) - (1-p_win_i) else null </field>
+      </value_fields>
+
+      <certainty deterministic="true">
+        <rule if="degrade_mode == 'NORMAL' and warnings is empty">1.00</rule>
+        <rule if="warnings intersects {SOME_PRICES_INVALID, JOIN_MISS}">0.80</rule>
+        <rule if="warnings intersects {ALL_PRICES_INVALID, FEW_VALID_SPEEDS_NEUTRALIZED}">0.60</rule>
+      </certainty>
+
+      <ranking_isolation>
+        <rule>Do NOT use p_win_i / PlaceProb_i / EV in any tie-break or ordering.</rule>
+      </ranking_isolation>
+    </model_spec>
+
+    <outputs>
+      <mapping>
+        <rule>Write p_win_i -> races[].runners[].forecast.win_prob</rule>
+        <rule>Write PlaceProb_i -> races[].runners[].forecast.place_prob</rule>
+        <rule>Write RunnerVector.x.market_prob -> races[].runners[].forecast.market_prob</rule>
+        <rule>Write value_edge_i -> races[].runners[].forecast.value_edge</rule>
+        <rule>Write ev_1u_i -> races[].runners[].forecast.ev_1u</rule>
+        <rule>Write certainty -> races[].runners[].forecast.certainty</rule>
+      </mapping>
+      <engine_context_params>
+        <field name="engine_context.forecast_params.tau" value="0.12"/>
+        <field name="engine_context.forecast_params.alpha" value="null"/>
+        <field name="engine_context.forecast_params.tier_prior_policy" value="none"/>
+        <field name="engine_context.forecast_params.market_prob_basis" value="valid_prices_only|uniform_if_empty"/>
+        <field name="engine_context.forecast_params.notes" value="LOGIT_WIN_PLACE_v0 (overlay-only)"/>
+      </engine_context_params>
+    </outputs>
+  </turf_engine_pro_overlay>
+
+  <!-- ===================================================== -->
+  <!-- 6) SHAPES JSON SCHEMA MIRRORS (0.2.1p2)                -->
+  <!-- ===================================================== -->
+  <turf_lite_shapes_json_schema_mirrors module_id="TURF_LITE_SHAPES_JSON_SCHEMA_MIRRORS" version="0.2.1p2">
+
+    <!-- Barrier null-safe minimum -->
+    <schema id="turf.market_snapshot.v1.barrier_patch"><![CDATA[
+{
+  "$id": "urn:turf:lite:market_snapshot:barrier_patch:0.2.1p2",
+  "type": "object",
+  "properties": {
+    "barrier": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 1 }
+      ]
+    }
+  }
+}
+]]></schema>
+
+    <!-- Stake card: lite output subset mirror (nice-to-have asserts) -->
+    <schema id="turf.stake_card.v1.lite_output_subset"><![CDATA[
+{
+  "$id": "urn:turf:lite:stake_card.v1:lite_output_subset:0.2.1p2",
+  "type": "object",
+  "required": ["engine_context","meeting","races"],
+  "properties": {
+    "engine_context": {
+      "type": "object",
+      "required": ["engine_spec_id","engine_version","lite_version","degrade_mode","warnings","inputs_hash"],
+      "properties": {
+        "engine_spec_id": {"type":"string"},
+        "engine_version": {"type":"string","const":"0.2.1p2"},
+        "lite_version": {"type":"string","const":"0.2.1p2"},
+        "degrade_mode": {"type":"string","enum":["NORMAL","MARKET_ONLY","PARTIAL_SIDECAR"]},
+        "warnings": {
+          "type":"array",
+          "items":{"type":"string"},
+          "uniqueItems": true
+        },
+        "inputs_hash": {"type":"string"},
+        "forecast_params": {"type":["object","null"]},
+        "debug": {"type":["object","null"]}
+      }
+    },
+    "meeting": {"type":"object"},
+    "races": {"type":"array"}
+  }
+}
+]]></schema>
+
+    <!-- Forecast overlay subset mirror -->
+    <schema id="turf.stake_card.v1.lite_forecast_overlay_subset"><![CDATA[
+{
+  "$id": "urn:turf:lite:stake_card.v1:forecast_overlay:0.2.1p2",
+  "type": "object",
+  "required": ["races", "engine_context"],
+  "properties": {
+    "engine_context": {
+      "type": "object",
+      "properties": {
+        "forecast_params": {
+          "type": ["object","null"],
+          "properties": {
+            "tau":   { "type": ["number","null"], "minimum": 0.01, "maximum": 1.0 },
+            "alpha": { "type": ["number","null"], "minimum": 0.0,  "maximum": 1.0 },
+            "tier_prior_policy": { "type": ["string","null"] },
+            "market_prob_basis": { "type": ["string","null"], "enum": ["valid_prices_only|uniform_if_empty", null] },
+            "notes": { "type": ["string","null"] }
+          }
+        },
+        "debug": {
+          "type": ["object","null"],
+          "properties": {
+            "overlay_writer": {"type":["string","null"]},
+            "runner_vector_checksum": {"type":["string","null"]}
+          }
+        }
+      }
+    },
+    "races": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "runners": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "forecast": {
+                  "type": ["object","null"],
+                  "properties": {
+                    "win_prob":    { "type": ["number","null"], "minimum": 0.0, "maximum": 1.0 },
+                    "place_prob":  { "type": ["number","null"], "minimum": 0.0, "maximum": 1.0 },
+                    "market_prob": { "type": ["number","null"], "minimum": 0.0, "maximum": 1.0 },
+                    "value_edge":  { "type": ["number","null"], "minimum": -1.0, "maximum": 1.0 },
+                    "ev_1u":       { "type": ["number","null"] },
+                    "certainty":   { "type": ["number","null"], "enum": [0.60, 0.80, 1.00, null] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+]]></schema>
+
+    <!-- Runner vector schema mirror -->
+    <schema id="turf.runner_vector.v1"><![CDATA[
+{
+  "$id": "urn:turf:pro:runner_vector.v1:0.1.0",
+  "type": "object",
+  "required": ["meeting_id","race_number","runners","provenance"],
+  "properties": {
+    "meeting_id": {"type":"string"},
+    "race_number": {"type":"integer","minimum":1},
+    "runners": {
+      "type":"array",
+      "minItems": 2,
+      "items": {
+        "type":"object",
+        "required": ["runner_number","x"],
+        "properties": {
+          "runner_number": {"type":"integer","minimum":1},
+          "x": {
+            "type": "object",
+            "required": ["market_prob","lite_score","map_role_onehot","barrier_pct",
+                         "speed_norm","days_since_run_norm","field_size_norm",
+                         "distance_suit_norm","track_condition_onehot","weight_eff_norm",
+                         "class_delta_norm","last600_eff_norm","pos_delta_norm",
+                         "jockey_sr_norm","trainer_sr_norm","gear_health_norm"],
+            "properties": {
+              "market_prob": {"type":"number","minimum":0.0,"maximum":1.0},
+              "lite_score": {"type":"number","minimum":0.0,"maximum":1.0},
+              "map_role_onehot": {"type":"array","minItems":5,"maxItems":5,"items":{"type":"integer","enum":[0,1]}},
+              "barrier_pct": {"type":"number","minimum":0.0,"maximum":1.0},
+              "speed_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "days_since_run_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "field_size_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "distance_suit_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "track_condition_onehot": {"type":"array","minItems":6,"maxItems":6,"items":{"type":"integer","enum":[0,1]}},
+              "weight_eff_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "class_delta_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "last600_eff_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "pos_delta_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "jockey_sr_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "trainer_sr_norm": {"type":"number","minimum":0.0,"maximum":1.0},
+              "gear_health_norm": {"type":"number","minimum":0.0,"maximum":1.0}
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type":"object",
+      "required":["file_id","page_range","source_hash","extractor_version","captured_at"],
+      "properties":{
+        "file_id":{"type":"string"},
+        "page_range":{"type":"string"},
+        "source_hash":{"type":"string"},
+        "extractor_version":{"type":"string"},
+        "captured_at":{"type":"string"}
+      }
+    }
+  }
+}
+]]></schema>
+
+  </turf_lite_shapes_json_schema_mirrors>
+
+  <!-- ===================================================== -->
+  <!-- 7) OPERATOR HANDBOOK (0.2.1p2)                         -->
+  <!-- ===================================================== -->
+  <turf_lite_operator_handbook module_id="TURF_LITE_OPERATOR_HANDBOOK" version="0.2.1p2">
+    <workflow>
+      <step n="1">Ingest market snapshot (LITE subset).</step>
+      <step n="2">Attempt join of runner_speed_derived sidecar on (meeting_id, race_number, runner_number).</step>
+      <step n="3">Compute MarketRankN (valid prices only; neutral 0.50 if none).</step>
+      <step n="4">Compute SpeedProxyN (min-max over avg_speed_mps; neutral 0.50 if < 3 valid).</step>
+      <step n="5">Compute MapAdvN (present barriers only; not ranked if missing; map_role UNKNOWN on join-miss).</step>
+      <step n="6">Compute LiteScore and LiteTag (fixed weights + thresholds).</step>
+      <step n="7">Apply feature_tiebreak_gate (M_RWE -> M_ABF -> CCC_i) only for ties.</step>
+      <step n="8">Emit stake card outputs + engine_context (warnings sorted unique).</step>
+      <step n="9">Build turf.runner_vector.v1 and run TURF_ENGINE_PRO_OVERLAY (LOGIT_WIN_PLACE_v0) to write forecast.* and forecast_params; stamp debug overlay_writer + runner_vector_checksum.</step>
+    </workflow>
+
+    <operator_checks>
+      <check>degrade_mode selection uses FIRST_MATCH precedence.</check>
+      <check>warnings are unique + sorted lexicographically.</check>
+      <check>if ALL_PRICES_INVALID then market_prob is uniform 1/N (for runner_vector + overlay).</check>
+      <check>if FEW_VALID_SPEEDS_NEUTRALIZED then speed_norm == 0.5 for all in runner_vector.</check>
+      <check>forecast overlay present when lite_score present.</check>
+      <check>runner ordering unchanged by forecast.* fields.</check>
+      <check>debug.overlay_writer == PRO_OVERLAY_LOGIT_WIN_PLACE_V0 and debug.runner_vector_checksum is present when overlay runs.</check>
+      <check>softmax coherence: abs(sum(win_prob)-1.0) <= 1e-9 (implementation target).</check>
+    </operator_checks>
+  </turf_lite_operator_handbook>
+
+  <!-- ===================================================== -->
+  <!-- 8) HELLO WORLD SAMPLES (0.2.1p2)                       -->
+  <!-- ===================================================== -->
+  <turf_lite_hello_world_samples module_id="TURF_LITE_HELLO_WORLD_SAMPLES" version="0.2.1p2">
+
+    <sample id="stake_card_with_forecast_demo.json"><![CDATA[
+{
+  "engine_context": {
+    "engine_spec_id": "TURF_ENGINE_LITE_AU",
+    "engine_version": "0.2.1p2",
+    "lite_version": "0.2.1p2",
+    "degrade_mode": "NORMAL",
+    "warnings": [],
+    "inputs_hash": "SHA256:DEMO_HASH",
+    "forecast_params": {
+      "tau": 0.12,
+      "alpha": null,
+      "tier_prior_policy": "none",
+      "market_prob_basis": "valid_prices_only|uniform_if_empty",
+      "notes": "LOGIT_WIN_PLACE_v0 (overlay-only)"
+    },
+    "debug": {
+      "overlay_writer": "PRO_OVERLAY_LOGIT_WIN_PLACE_V0",
+      "runner_vector_checksum": "SHA256:DEMO_RV"
+    }
+  },
+  "meeting": {
+    "meeting_id": "DEMO_2025_12_13_RANDWICK",
+    "track_canonical": "ROYAL_RANDWICK",
+    "date_local": "2025-12-13",
+    "track_condition_raw": "Soft 5"
+  },
+  "races": [
+    {
+      "race_number": 1,
+      "distance_m": 1200,
+      "runners": [
+        {
+          "runner_number": 1,
+          "runner_name": "RUNNER_A",
+          "lite_score": 0.70,
+          "lite_tag": "B_LITE",
+          "odds_minimal": { "price_now_dec": 3.00 },
+          "forecast": { "win_prob": 0.37, "place_prob": 0.61, "market_prob": 0.34, "value_edge": 0.03, "ev_1u": 0.09, "certainty": 1.00 }
+        },
+        {
+          "runner_number": 2,
+          "runner_name": "RUNNER_B",
+          "lite_score": 0.66,
+          "lite_tag": "B_LITE",
+          "odds_minimal": { "price_now_dec": 3.20 },
+          "forecast": { "win_prob": 0.31, "place_prob": 0.53, "market_prob": 0.33, "value_edge": -0.02, "ev_1u": -0.03, "certainty": 1.00 }
+        },
+        {
+          "runner_number": 3,
+          "runner_name": "RUNNER_C",
+          "lite_score": 0.62,
+          "lite_tag": "PASS_LITE",
+          "odds_minimal": { "price_now_dec": 4.80 },
+          "forecast": { "win_prob": 0.21, "place_prob": 0.39, "market_prob": 0.22, "value_edge": -0.01, "ev_1u": -0.02, "certainty": 1.00 }
+        },
+        {
+          "runner_number": 4,
+          "runner_name": "RUNNER_D",
+          "lite_score": 0.59,
+          "lite_tag": "PASS_LITE",
+          "odds_minimal": { "price_now_dec": 9.50 },
+          "forecast": { "win_prob": 0.11, "place_prob": 0.23, "market_prob": 0.11, "value_edge": 0.00, "ev_1u": -0.01, "certainty": 1.00 }
+        }
+      ]
+    }
+  ]
+}
+]]></sample>
+
+    <sample id="stake_card_partial_sidecar_warning_sort_demo.json"><![CDATA[
+{
+  "engine_context": {
+    "engine_spec_id": "TURF_ENGINE_LITE_AU",
+    "engine_version": "0.2.1p2",
+    "lite_version": "0.2.1p2",
+    "degrade_mode": "PARTIAL_SIDECAR",
+    "warnings": ["ALL_PRICES_INVALID","JOIN_MISS"],
+    "inputs_hash": "SHA256:DEMO_HASH_2",
+    "forecast_params": {
+      "tau": 0.12,
+      "alpha": null,
+      "tier_prior_policy": "none",
+      "market_prob_basis": "valid_prices_only|uniform_if_empty",
+      "notes": "LOGIT_WIN_PLACE_v0 (overlay-only)"
+    },
+    "debug": {
+      "overlay_writer": "PRO_OVERLAY_LOGIT_WIN_PLACE_V0",
+      "runner_vector_checksum": "SHA256:DEMO_RV_2"
+    }
+  },
+  "meeting": { "meeting_id": "DEMO_PARTIAL", "track_canonical": "DEMO_TRACK", "date_local": "2025-12-13" },
+  "races": [
+    {
+      "race_number": 1,
+      "distance_m": 1000,
+      "runners": [
+        { "runner_number": 1, "runner_name": "R1", "lite_score": 0.60, "lite_tag": "B_LITE", "odds_minimal": { "price_now_dec": null }, "forecast": { "win_prob": 0.25, "place_prob": 0.48, "market_prob": 0.25, "value_edge": 0.00, "ev_1u": null, "certainty": 0.60 } },
+        { "runner_number": 2, "runner_name": "R2", "lite_score": 0.58, "lite_tag": "B_LITE", "odds_minimal": { "price_now_dec": 1.00 }, "forecast": { "win_prob": 0.25, "place_prob": 0.48, "market_prob": 0.25, "value_edge": 0.00, "ev_1u": null, "certainty": 0.60 } },
+        { "runner_number": 3, "runner_name": "R3", "lite_score": 0.55, "lite_tag": "PASS_LITE", "odds_minimal": { "price_now_dec": null }, "forecast": { "win_prob": 0.25, "place_prob": 0.48, "market_prob": 0.25, "value_edge": 0.00, "ev_1u": null, "certainty": 0.60 } },
+        { "runner_number": 4, "runner_name": "R4", "lite_score": 0.52, "lite_tag": "PASS_LITE", "odds_minimal": { "price_now_dec": null }, "forecast": { "win_prob": 0.25, "place_prob": 0.48, "market_prob": 0.25, "value_edge": 0.00, "ev_1u": null, "certainty": 0.60 } }
+      ]
+    }
+  ]
+}
+]]></sample>
+
+  </turf_lite_hello_world_samples>
+
+  <!-- ===================================================== -->
+  <!-- 9) MICRO PATCH (0.2.1p2)                               -->
+  <!-- ===================================================== -->
+  <turf_engine_lite_micro_patch module_id="TURF_ENGINE_LITE_MICRO_PATCH" version="0.2.1p2">
+    <note>Semantics and determinism tightening only. No changes to weights, tiers, or scoring fence.</note>
+  </turf_engine_lite_micro_patch>
+
+  <!-- ===================================================== -->
+  <!-- 10) REFERENCE IMPLEMENTATION (python_like)             -->
+  <!-- ===================================================== -->
+  <reference_implementation
+    id="python_like"
+    scope="OVERLAY_ONLY"
+    deterministic="true"
+    binds_to="TURF_ENGINE_PRO_OVERLAY:LOGIT_WIN_PLACE_v0"
+    version="0.1.0"><![CDATA[
+# Deterministic, overlay-only reference.
+# Wiring nudges included:
+#   - stamp overlay writer + runner_vector checksum into engine_context.debug
+#   - enforce single-writer overlay policy with overlay_written guard
+
+import math, json, hashlib
+
+def canonical_json(obj):
+    return json.dumps(obj, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+def sha256_hex(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+def clamp(x, lo, hi): return lo if x < lo else hi if x > hi else x
+def logistic(z): return 1.0 / (1.0 + math.exp(-z))
+def softmax(vals, tau):
+    m = max(vals)
+    exps = [math.exp((v - m)/tau) for v in vals]
+    Z = sum(exps)
+    return [e / Z for e in exps]
+
+def valid_price(price):
+    if price is None: return False
+    return isinstance(price, (int, float)) and math.isfinite(price) and price > 1.0
+
+def build_runner_vector(race_ctx):
+    R = race_ctx["runners"]
+    N = len(R)
+
+    # market_prob: valid prices only; if none => uniform 1/N
+    valid_idx = [i for i,r in enumerate(R) if valid_price(r.get("price_now_dec"))]
+    if len(valid_idx) > 0:
+        inv = [0.0]*N
+        O = 0.0
+        for i in valid_idx:
+            inv[i] = 1.0 / R[i]["price_now_dec"]
+            O += inv[i]
+        market_prob = [ (inv[i]/O if i in valid_idx else 0.0) for i in range(N) ]
+    else:
+        market_prob = [ 1.0/N for _ in range(N) ]
+
+    # speed_norm: min-max if >=3 valid speeds else 0.5
+    sp_valid = [(i,r["avg_speed_mps"]) for i,r in enumerate(R)
+                if r.get("avg_speed_mps") is not None and r["avg_speed_mps"] >= 0 and math.isfinite(r["avg_speed_mps"])]
+    if len(sp_valid) < 3:
+        speed_norm = [0.5]*N
+    else:
+        vals = [v for (_,v) in sp_valid]
+        vmin, vmax = min(vals), max(vals)
+        denom = (vmax - vmin) if (vmax - vmin) > 0 else 1.0
+        tmp = {i: (R[i]["avg_speed_mps"] - vmin)/denom for (i,_) in sp_valid}
+        speed_norm = [ tmp.get(i, 0.5) for i in range(N) ]
+
+    # barrier_pct: rank among PRESENT barriers; missing => 0.5
+    present = [(i, r["barrier"]) for i,r in enumerate(R)
+               if isinstance(r.get("barrier"), int) and r["barrier"] >= 1]
+    barrier_pct = [0.5]*N
+    if len(present) >= 1:
+        present_sorted = sorted(present, key=lambda t:(t[1], R[t[0]]["runner_number"]))
+        n = len(present_sorted)
+        denom = max(1, n-1)
+        for rank,(i,_) in enumerate(present_sorted, start=1):
+            barrier_pct[i] = (rank-1)/denom
+
+    ROLE_INDEX = {"LEAD":0,"ON_PACE":1,"MID":2,"BACK":3,"UNKNOWN":4}
+    map_onehot = []
+    for r in R:
+        role = r.get("map_role_inferred") or "UNKNOWN"
+        idx = ROLE_INDEX.get(role, 4)
+        v = [0,0,0,0,0]; v[idx] = 1
+        map_onehot.append(v)
+
+    def tc_onehot(raw):
+        raw = (raw or "").upper()
+        if   "FIRM"  in raw: i=0
+        elif "GOOD"  in raw: i=1
+        elif "SOFT"  in raw: i=2
+        elif "HEAVY" in raw: i=3
+        elif "SYN"   in raw or "POLY" in raw or "TAPETA" in raw: i=4
+        else: i=5
+        arr=[0,0,0,0,0,0]; arr[i]=1; return arr
+    track_onehot = [tc_onehot(race_ctx.get("track_condition_raw"))]*N
+
+    dsr = []
+    for r in R:
+        d = r.get("days_since_run")
+        dsr.append( clamp((d/120.0),0.0,1.0) if isinstance(d,(int,float)) and d>=0 and math.isfinite(d) else 0.5 )
+
+    fszn = [ clamp((R[i].get("field_size",N)-2)/16.0, 0.0, 1.0) for i in range(N) ]
+
+    dsn=[]
+    for r in R:
+        s = r.get("dist_bucket_stats")
+        if s and isinstance(s.get("starts"),int) and s["starts"]>=3 and isinstance(s.get("placed"),int) and s["placed"]>=0:
+            dsn.append( clamp(s["placed"]/max(1,s["starts"]),0.0,1.0) )
+        else:
+            dsn.append(0.5)
+
+    we_vals=[]
+    for r in R:
+        rating = r.get("rating")
+        wkg    = r.get("allocated_weight_kg")
+        if rating is not None and wkg is not None and wkg>0 and math.isfinite(rating) and math.isfinite(wkg):
+            we_vals.append(rating/wkg)
+        else:
+            we_vals.append(None)
+    has_we = [i for i,v in enumerate(we_vals) if v is not None]
+    if len(has_we)>=2:
+        vmin=min(we_vals[i] for i in has_we); vmax=max(we_vals[i] for i in has_we)
+        denom=(vmax-vmin) if (vmax-vmin)>0 else 1.0
+        weight_eff_norm=[ ((we_vals[i]-vmin)/denom) if i in has_we else 0.5 for i in range(N) ]
+    elif len(has_we)==1:
+        weight_eff_norm=[0.5 if v is None else 1.0 for v in we_vals]
+    else:
+        weight_eff_norm=[0.5]*N
+
+    cdn=[]
+    for r in R:
+        d = r.get("bm_delta")
+        if d is None or not math.isfinite(d):
+            cdn.append(0.5)
+        else:
+            if d <= -6: cdn.append(1.0)
+            elif d >= +6: cdn.append(0.0)
+            else:
+                cdn.append( clamp(0.5 - (d/12.0), 0.0, 1.0) )
+
+    l6=[]
+    for r in R:
+        fsp = r.get("fsp_pct")
+        if fsp is None or not math.isfinite(fsp):
+            l6.append(0.5)
+        else:
+            val = 0.50 + 0.0033*(fsp-100.0)
+            l6.append( clamp(val, 0.0, 1.0) )
+
+    pdn=[]
+    denom=max(1,(N-1))
+    for r in R:
+        p8, p4 = r.get("pos800"), r.get("pos400")
+        if isinstance(p8,int) and isinstance(p4,int) and p8>=1 and p4>=1:
+            d=(p8 - p4)/denom
+            pdn.append( clamp(0.5 + 0.5*d, 0.0, 1.0) )
+        else:
+            pdn.append(0.5)
+
+    jsr=[]
+    tsr=[]
+    for r in R:
+        jw=r.get("jockey_win_pct_12m"); tw=r.get("trainer_win_pct_12m")
+        jsr.append( clamp((jw/0.30),0.0,1.0) if (jw is not None and math.isfinite(jw)) else 0.5 )
+        tsr.append( clamp((tw/0.30),0.0,1.0) if (tw is not None and math.isfinite(tw)) else 0.5 )
+
+    ghn=[]
+    for r in R:
+        tag = (r.get("gear_health_tag") or "").lower()
+        if tag=="bad": ghn.append(0.25)
+        elif tag=="positive": ghn.append(0.75)
+        else: ghn.append(0.5)
+
+    lscore=[ clamp(r.get("lite_score",0.5), 0.0, 1.0) for r in R ]
+
+    out = []
+    for i,r in enumerate(R):
+        vec = {
+            "market_prob": market_prob[i],
+            "lite_score":  lscore[i],
+            "map_role_onehot": map_onehot[i],
+            "barrier_pct": barrier_pct[i],
+            "speed_norm":  speed_norm[i],
+            "days_since_run_norm": dsr[i],
+            "field_size_norm": fszn[i],
+            "distance_suit_norm": dsn[i],
+            "track_condition_onehot": track_onehot[i],
+            "weight_eff_norm": weight_eff_norm[i],
+            "class_delta_norm": cdn[i],
+            "last600_eff_norm": l6[i],
+            "pos_delta_norm": pdn[i],
+            "jockey_sr_norm": jsr[i],
+            "trainer_sr_norm": tsr[i],
+            "gear_health_norm": ghn[i],
+        }
+        out.append({"runner_number": r["runner_number"], "x": vec})
+
+    checksum = sha256_hex(canonical_json({"runners": out}))
+    return {"runners": out, "debug": {"checksum": checksum}}
+
+COEFFS_LOGIT_WIN_PLACE_V0 = {
+    "b0": -0.20,
+    "market_prob": 1.40,
+    "lite_score":  1.10,
+    "barrier_pct": -0.25,
+    "speed_norm":   0.55,
+    "days_since_run_norm": -0.15,
+    "field_size_norm": -0.10,
+    "distance_suit_norm": 0.35,
+    "weight_eff_norm": 0.30,
+    "class_delta_norm": 0.28,
+    "last600_eff_norm": 0.45,
+    "pos_delta_norm":   0.20,
+    "jockey_sr_norm":   0.18,
+    "trainer_sr_norm":  0.12,
+    "gear_health_norm": 0.08,
+    "map_role_onehot[0]": 0.18,
+    "map_role_onehot[1]": 0.10,
+    "map_role_onehot[2]": 0.00,
+    "map_role_onehot[3]":-0.12,
+    "map_role_onehot[4]": 0.00,
+    "track_condition_onehot[0]": 0.05,
+    "track_condition_onehot[1]": 0.00,
+    "track_condition_onehot[2]":-0.03,
+    "track_condition_onehot[3]":-0.06,
+    "track_condition_onehot[4]": 0.00,
+    "track_condition_onehot[5]": 0.00,
+}
+
+def pro_overlay_logit_win_place_v0(runner_vector, prices_now_dec, degrade_mode, warnings, coeffs, tau=0.12):
+    zs=[]
+    s_logit=[]
+    for rv in runner_vector:
+        x = rv["x"]
+        z = coeffs["b0"]
+        z += coeffs["market_prob"] * x["market_prob"]
+        z += coeffs["lite_score"]  * x["lite_score"]
+        z += coeffs["barrier_pct"] * x["barrier_pct"]
+        z += coeffs["speed_norm"]  * x["speed_norm"]
+        z += coeffs["days_since_run_norm"] * x["days_since_run_norm"]
+        z += coeffs["field_size_norm"]     * x["field_size_norm"]
+        z += coeffs["distance_suit_norm"]  * x["distance_suit_norm"]
+        z += coeffs["weight_eff_norm"]     * x["weight_eff_norm"]
+        z += coeffs["class_delta_norm"]    * x["class_delta_norm"]
+        z += coeffs["last600_eff_norm"]    * x["last600_eff_norm"]
+        z += coeffs["pos_delta_norm"]      * x["pos_delta_norm"]
+        z += coeffs["jockey_sr_norm"]      * x["jockey_sr_norm"]
+        z += coeffs["trainer_sr_norm"]     * x["trainer_sr_norm"]
+        z += coeffs["gear_health_norm"]    * x["gear_health_norm"]
+        mr = x["map_role_onehot"]; tc = x["track_condition_onehot"]
+        z += coeffs["map_role_onehot[0]"] * mr[0]
+        z += coeffs["map_role_onehot[1]"] * mr[1]
+        z += coeffs["map_role_onehot[2]"] * mr[2]
+        z += coeffs["map_role_onehot[3]"] * mr[3]
+        z += coeffs["map_role_onehot[4]"] * mr[4]
+        z += coeffs["track_condition_onehot[0]"] * tc[0]
+        z += coeffs["track_condition_onehot[1]"] * tc[1]
+        z += coeffs["track_condition_onehot[2]"] * tc[2]
+        z += coeffs["track_condition_onehot[3]"] * tc[3]
+        z += coeffs["track_condition_onehot[4]"] * tc[4]
+        z += coeffs["track_condition_onehot[5]"] * tc[5]
+        zs.append(z)
+        s_logit.append(logistic(z))
+    p_win = softmax(s_logit, tau)
+
+    market_prob = [rv["x"]["market_prob"] for rv in runner_vector]
+
+    N = len(p_win)
+    p_place = []
+    for i in range(N):
+        acc = 0.0
+        for k in range(N):
+            if k==i: continue
+            denom = (1.0 - p_win[k])
+            acc += p_win[k] * (p_win[i] / denom) if denom > 0 else 0.0
+        p_place.append( clamp(p_win[i] + acc, 0.0, 1.0) )
+
+    value_edge = [ p_win[i] - market_prob[i] for i in range(N) ]
+    ev_1u = []
+    for i,rv in enumerate(runner_vector):
+        rn = rv["runner_number"]
+        price = prices_now_dec.get(rn)
+        if valid_price(price):
+            ev_1u.append( p_win[i]*(price-1.0) - (1.0 - p_win[i]) )
+        else:
+            ev_1u.append(None)
+
+    wset = set(warnings or [])
+    if degrade_mode=="NORMAL" and len(wset)==0:
+        cert=1.00
+    elif len(wset & {"SOME_PRICES_INVALID","JOIN_MISS"})>0:
+        cert=0.80
+    elif len(wset & {"ALL_PRICES_INVALID","FEW_VALID_SPEEDS_NEUTRALIZED"})>0:
+        cert=0.60
+    else:
+        cert=0.80
+
+    out={}
+    for i,rv in enumerate(runner_vector):
+        rn = rv["runner_number"]
+        out[rn] = {
+            "win_prob":   p_win[i],
+            "place_prob": p_place[i],
+            "market_prob":market_prob[i],
+            "value_edge": value_edge[i],
+            "ev_1u":      ev_1u[i],
+            "certainty":  cert
+        }
+    return out
+
+def write_forecast_into_stake_card(stake_card):
+    # Single-writer policy: do not run multiple overlays
+    overlay_written = False
+
+    if overlay_written:
+        return stake_card
+
+    for race in stake_card["races"]:
+        engine_inputs = {
+            "distance_m": race.get("distance_m"),
+            "track_condition_raw": stake_card["meeting"].get("track_condition_raw"),
+            "degrade_mode": stake_card["engine_context"]["degrade_mode"],
+            "warnings": stake_card["engine_context"].get("warnings", []),
+            "runners": []
+        }
+        N = len(race["runners"])
+        for rr in race["runners"]:
+            engine_inputs["runners"].append({
+                "runner_number": rr["runner_number"],
+                "lite_score": rr.get("lite_score", 0.5),
+                "price_now_dec": rr.get("odds_minimal", {}).get("price_now_dec") if isinstance(rr.get("odds_minimal"), dict) else None,
+                "barrier": rr.get("barrier"),
+                "avg_speed_mps": rr.get("avg_speed_mps"),
+                "map_role_inferred": rr.get("map_role_inferred"),
+                "days_since_run": rr.get("days_since_run"),
+                "field_size": N,
+                "dist_bucket_stats": rr.get("dist_bucket_stats"),
+                "rating": rr.get("rating"),
+                "allocated_weight_kg": rr.get("allocated_weight_kg"),
+                "bm_delta": rr.get("bm_delta"),
+                "fsp_pct": rr.get("fsp_pct"),
+                "pos800": rr.get("pos800"), "pos400": rr.get("pos400"),
+                "jockey_win_pct_12m": rr.get("jockey_win_pct_12m"),
+                "trainer_win_pct_12m": rr.get("trainer_win_pct_12m"),
+                "gear_health_tag": rr.get("gear_health_tag"),
+            })
+
+        rv = build_runner_vector(engine_inputs)
+        prices = {r["runner_number"]: r.get("price_now_dec") for r in engine_inputs["runners"]}
+        fc = pro_overlay_logit_win_place_v0(
+            rv["runners"], prices,
+            stake_card["engine_context"]["degrade_mode"],
+            stake_card["engine_context"].get("warnings", []),
+            COEFFS_LOGIT_WIN_PLACE_V0, tau=0.12
+        )
+
+        for rr in race["runners"]:
+            rnum = rr["runner_number"]
+            one = fc[rnum]
+            rr["forecast"] = {
+                "win_prob": one["win_prob"],
+                "place_prob": one["place_prob"],
+                "market_prob": one["market_prob"],
+                "value_edge": one["value_edge"],
+                "ev_1u": one["ev_1u"],
+                "certainty": one["certainty"]
+            }
+
+        dbg = stake_card["engine_context"].setdefault("debug", {})
+        dbg["overlay_writer"] = "PRO_OVERLAY_LOGIT_WIN_PLACE_V0"
+        dbg["runner_vector_checksum"] = rv["debug"]["checksum"]
+
+    overlay_written = True
+    return stake_card
+]]></reference_implementation>
+
+</turf_lite_bundle>
