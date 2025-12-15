@@ -17,8 +17,13 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
   MAIL_FROM: ${{ vars.MAIL_FROM || '' }}
   MAIL_TO: ${{ vars.MAIL_TO || '' }}
+  SMTP_SERVER: ${{ secrets.SMTP_SERVER || '' }}
+  SMTP_PORT: ${{ secrets.SMTP_PORT || '' }}
+  SMTP_USERNAME: ${{ secrets.SMTP_USERNAME || '' }}
+  SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD || '' }}
 
 jobs:
   build-deploy:
@@ -49,7 +54,7 @@ jobs:
 
       - name: Generate demo stake cards
         run: |
-          python cli/turf_cli.py demo-run --date "${{ steps.date.outputs.run_date }}" --out out/cards
+          python -m cli.turf_cli demo-run --date "${{ steps.date.outputs.run_date }}" --out out/cards
 
       - name: Render static site
         run: |
@@ -74,13 +79,13 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Email site URL
-        if: ${{ env.MAIL_TO != '' && env.MAIL_FROM != '' && secrets.SMTP_SERVER != '' }}
+        if: ${{ env.MAIL_TO != '' && env.MAIL_FROM != '' && env.SMTP_SERVER != '' }}
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT || 465 }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: ${{ env.SMTP_PORT || 465 }}
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
           subject: "TURF daily site for ${{ steps.date.outputs.run_date }}"
           to: ${{ env.MAIL_TO }}
           from: ${{ env.MAIL_FROM }}
