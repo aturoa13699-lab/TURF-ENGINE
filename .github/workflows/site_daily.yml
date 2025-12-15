@@ -1,0 +1,76 @@
+name: TURF ENGINE LITE — Site
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Run date (YYYY-MM-DD, Australia/Sydney). Defaults to today."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve run date (Australia/Sydney)
+        id: rundate
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            RUN_DATE="${{ github.event.inputs.date }}"
+          else
+            RUN_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
+          fi
+          echo "RUN_DATE=${RUN_DATE}" >> $GITHUB_ENV
+          echo "run_date=${RUN_DATE}" >> $GITHUB_OUTPUT
+          echo "Resolved RUN_DATE=${RUN_DATE}"
+
+      - name: Download latest turf_daily artifact
+        id: artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: turf_daily.yml
+          workflow_conclusion: success
+          name: turf-daily-${{ steps.rundate.outputs.run_date }}
+          branch: ${{ github.ref_name }}
+          path: out
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Fallback build when no artifact
+        if: steps.artifact.outcome == 'failure'
+        run: |
+          echo "No matching turf_daily artifact found; building from fixtures"
+          ./scripts/run_turf_daily.sh "$RUN_DATE"
+
+      - name: Render static site
+        run: |
+          python site/build_site.py --stake-cards out/stake_cards --out public
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
