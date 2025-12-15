@@ -18,6 +18,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
+  # Make repo-root imports work for *every* python invocation
+  PYTHONPATH: ${{ github.workspace }}
 
 jobs:
   backfill:
@@ -25,6 +27,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Hard fail if anyone reintroduces file-mode CLI invocation
+      - name: Guardrail: forbid file-mode CLI
+        run: |
+          if grep -RIn --line-number -E 'python\s+cli/turf_cli\.py' .github/workflows; then
+            echo "::error ::File-mode CLI invocation found in workflows. Use: python -m cli.turf_cli"
+            exit 1
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -40,10 +50,10 @@ jobs:
       - name: Resolve date window
         id: dates
         run: |
-          START=${{ github.event.inputs.start_date }}
-          END=${{ github.event.inputs.end_date }}
-          if [ -z "$START" ]; then START=$(date -u +%Y-%m-%d); fi
-          if [ -z "$END" ]; then END=$START; fi
+          START="${{ github.event.inputs.start_date }}"
+          END="${{ github.event.inputs.end_date }}"
+          if [ -z "$START" ]; then START="$(date -u +%Y-%m-%d)"; fi
+          if [ -z "$END" ]; then END="$START"; fi
           echo "start=$START" >> "$GITHUB_OUTPUT"
           echo "end=$END" >> "$GITHUB_OUTPUT"
 
@@ -51,9 +61,9 @@ jobs:
         run: |
           python tools/db_init_if_missing.py --db data/turf.duckdb
 
-      - name: Build demo cards
+      - name: Build demo cards (module mode)
         run: |
-          python cli/turf_cli.py demo-run --date "${{ steps.dates.outputs.start }}" --out out/cards
+          python -m cli.turf_cli demo-run --date "${{ steps.dates.outputs.start }}" --out out/cards
 
       - name: Append forecasts to DB
         run: |
@@ -77,6 +87,7 @@ jobs:
           echo "### Backfill & backtest" >> $GITHUB_STEP_SUMMARY
           echo "- Range: ${{ steps.dates.outputs.start }} to ${{ steps.dates.outputs.end }}" >> $GITHUB_STEP_SUMMARY
           if [ -f out/reports/backtest_metrics.json ]; then
-            echo "\nMetrics:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Metrics:" >> $GITHUB_STEP_SUMMARY
             cat out/reports/backtest_metrics.json >> $GITHUB_STEP_SUMMARY
           fi
