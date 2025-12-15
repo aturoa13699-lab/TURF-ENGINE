@@ -32,7 +32,7 @@ jobs:
       - name: Guardrail: forbid file-mode CLI
         run: |
           if grep -RIn --line-number -E 'python\s+cli/turf_cli\.py' .github/workflows; then
-            echo "::error ::File-mode CLI invocation found in workflows. Use: python -m cli.turf_cli"
+            echo "::error::File-mode CLI invocation found in workflows. Use: python -m cli.turf_cli"
             exit 1
           fi
 
