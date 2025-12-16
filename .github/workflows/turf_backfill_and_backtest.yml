@@ -58,14 +58,13 @@ jobs:
           set -euxo pipefail
           mkdir -p out/backfill out/backtest out/diagnostics
 
-          # If your pipeline uses a CLI command instead, replace this line accordingly.
-          # Example alternative:
-          # python -m cli.turf_cli backfill-and-backtest --start-date "${{ inputs.start_date }}" --end-date "${{ inputs.end_date }}" --model "${{ inputs.model }}" --out out
-          python scripts/backtest.py \
-            --start-date "${{ inputs.start_date }}" \
-            --end-date "${{ inputs.end_date }}" \
+          # Run backtest using tools/backtest.py
+          # Note: Script expects --start/--end, not --start-date/--end-date
+          python tools/backtest.py \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
             --model "${{ inputs.model }}" \
-            --out out
+            --out out/backtest
 
       - name: Diagnostics (optional)
         if: ${{ always() }}
