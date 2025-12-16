@@ -1,0 +1,210 @@
+name: Site Build + Deploy (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "artifact | demo-run"
+        required: true
+        type: string
+      run_date:
+        description: "YYYY-MM-DD (optional; used for demo-run and summaries)"
+        required: false
+        type: string
+        default: ""
+      stake_cards_path:
+        description: "Path containing stake cards JSON inputs for site/build_site.py"
+        required: false
+        type: string
+        default: "out/stake_cards"
+      artifact_name:
+        description: "If mode=artifact: name of the artifact to download"
+        required: false
+        type: string
+        default: ""
+      send_email:
+        description: "Send email with Pages URL (only if SMTP secrets present)"
+        required: false
+        type: boolean
+        default: false
+      upload_publish_json:
+        description: "Upload publish.json as an artifact"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      SMTP_SERVER:
+        required: false
+      SMTP_PORT:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
+        required: false
+      MAIL_FROM:
+        required: false
+      MAIL_TO:
+        required: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guardrail - forbid file-mode CLI
+        run: |
+          if grep -RIn --line-number -E 'python\s+cli/turf_cli\.py' .github/workflows; then
+            echo "::error::File-mode CLI invocation found in workflows. Use: python -m cli.turf_cli"
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Resolve run date
+        id: date
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.run_date }}" ]; then
+            echo "run_date=${{ inputs.run_date }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_date=$(TZ=Australia/Sydney date +%F)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download stake-cards artifact
+        if: ${{ inputs.mode == 'artifact' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: turf_daily.yml
+          workflow_conclusion: success
+          name: ${{ inputs.artifact_name }}
+          branch: ${{ github.ref_name }}
+          path: out/artifacts
+        continue-on-error: true
+
+      - name: Prepare stake cards input (artifact mode)
+        if: ${{ inputs.mode == 'artifact' }}
+        run: |
+          set -euxo pipefail
+          mkdir -p "${{ inputs.stake_cards_path }}"
+          # Handle various artifact layouts from turf_daily.yml
+          if [ -d out/artifacts/stake_cards ]; then
+            cp -R out/artifacts/stake_cards/* "${{ inputs.stake_cards_path }}/"
+          elif [ -d out/artifacts/out/stake_cards ]; then
+            cp -R out/artifacts/out/stake_cards/* "${{ inputs.stake_cards_path }}/"
+          elif ls out/artifacts/*.json 1>/dev/null 2>&1; then
+            cp out/artifacts/*.json "${{ inputs.stake_cards_path }}/"
+          else
+            echo "::warning::No stake cards found in artifact. Falling back to demo-run."
+            python -m cli.turf_cli demo-run --date "${{ steps.date.outputs.run_date }}" --out out/demo_run
+            if [ -f out/demo_run/stake_card.json ]; then
+              cp out/demo_run/stake_card.json "${{ inputs.stake_cards_path }}/"
+            fi
+          fi
+
+      - name: Generate stake cards (demo-run mode)
+        if: ${{ inputs.mode == 'demo-run' }}
+        run: |
+          set -euxo pipefail
+          mkdir -p out/demo_run "${{ inputs.stake_cards_path }}"
+          python -m cli.turf_cli demo-run --date "${{ steps.date.outputs.run_date }}" --out out/demo_run
+
+          # Copy stake cards to expected location
+          if [ -f out/demo_run/stake_card.json ]; then
+            cp out/demo_run/stake_card.json "${{ inputs.stake_cards_path }}/"
+          fi
+          if [ -f out/demo_run/stake_card_pro.json ]; then
+            cp out/demo_run/stake_card_pro.json "${{ inputs.stake_cards_path }}/"
+          fi
+
+      - name: Build site into public/
+        run: |
+          set -euxo pipefail
+          rm -rf public
+          python site/build_site.py --stake-cards "${{ inputs.stake_cards_path }}" --out public
+
+      - name: Create publish.json
+        if: ${{ always() }}
+        run: |
+          set -euxo pipefail
+          mkdir -p out/diagnostics
+          cat > out/diagnostics/publish.json <<EOF
+          {
+            "run_date": "${{ steps.date.outputs.run_date }}",
+            "mode": "${{ inputs.mode }}",
+            "page_url": "${{ steps.deployment.outputs.page_url || '' }}"
+          }
+          EOF
+
+      - name: Upload publish.json artifact
+        if: ${{ always() && inputs.upload_publish_json }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish_json_${{ steps.date.outputs.run_date }}_${{ inputs.mode }}
+          path: out/diagnostics/publish.json
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Job summary
+        if: ${{ always() }}
+        run: |
+          echo "### TURF ENGINE Site Publish" >> $GITHUB_STEP_SUMMARY
+          echo "- Run date: ${{ steps.date.outputs.run_date }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Mode: ${{ inputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Send email (optional)
+        if: ${{ inputs.send_email && secrets.SMTP_SERVER != '' && secrets.MAIL_TO != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT || 465 }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "TURF daily site for ${{ steps.date.outputs.run_date }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          secure: true
+          html_body: |
+            <p>The static site is live:</p>
+            <p><a href="${{ steps.deployment.outputs.page_url }}">${{ steps.deployment.outputs.page_url }}</a></p>
+            <p>Run date: ${{ steps.date.outputs.run_date }}</p>
+            <p>Mode: ${{ inputs.mode }}</p>

@@ -10,67 +10,32 @@ on:
         required: false
         type: string
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 jobs:
-  build-and-deploy:
+  resolve-date:
     runs-on: ubuntu-latest
+    outputs:
+      run_date: ${{ steps.date.outputs.run_date }}
+      artifact_name: ${{ steps.date.outputs.artifact_name }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve run date (Australia/Sydney)
-        id: rundate
+      - name: Resolve run date
+        id: date
         run: |
           if [ -n "${{ github.event.inputs.date }}" ]; then
             RUN_DATE="${{ github.event.inputs.date }}"
           else
             RUN_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
           fi
-          echo "RUN_DATE=${RUN_DATE}" >> $GITHUB_ENV
-          echo "run_date=${RUN_DATE}" >> $GITHUB_OUTPUT
-          echo "Resolved RUN_DATE=${RUN_DATE}"
+          echo "run_date=${RUN_DATE}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=turf-daily-${RUN_DATE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: date=${RUN_DATE}, artifact=turf-daily-${RUN_DATE}"
 
-      - name: Download latest turf_daily artifact
-        id: artifact
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          workflow: turf_daily.yml
-          workflow_conclusion: success
-          name: turf-daily-${{ steps.rundate.outputs.run_date }}
-          branch: ${{ github.ref_name }}
-          path: out
-        continue-on-error: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -e .
-
-      - name: Fallback build when no artifact
-        if: steps.artifact.outcome == 'failure'
-        run: |
-          echo "No matching turf_daily artifact found; building from fixtures"
-          ./scripts/run_turf_daily.sh "$RUN_DATE"
-
-      - name: Render static site
-        run: |
-          python site/build_site.py --stake-cards out/stake_cards --out public
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+  site:
+    needs: resolve-date
+    uses: ./.github/workflows/site_build_and_deploy.yml
+    with:
+      mode: artifact
+      run_date: ${{ needs.resolve-date.outputs.run_date }}
+      artifact_name: ${{ needs.resolve-date.outputs.artifact_name }}
+      stake_cards_path: out/stake_cards
+      send_email: false
+      upload_publish_json: true

@@ -3,100 +3,31 @@ name: Publish site & email URL
 on:
   workflow_dispatch:
     inputs:
-      date:
-        description: "Optional run date (YYYY-MM-DD)"
+      run_date:
+        description: "YYYY-MM-DD (blank = today Australia/Sydney)"
         required: false
         default: ""
+      send_email:
+        description: "Send email (only works if SMTP secrets are configured)"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "15 20 * * *"
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-env:
-  PYTHON_VERSION: "3.11"
-  PYTHONPATH: ${{ github.workspace }}
-  MAIL_FROM: ${{ vars.MAIL_FROM || '' }}
-  MAIL_TO: ${{ vars.MAIL_TO || '' }}
-  SMTP_SERVER: ${{ secrets.SMTP_SERVER || '' }}
-  SMTP_PORT: ${{ secrets.SMTP_PORT || '' }}
-  SMTP_USERNAME: ${{ secrets.SMTP_USERNAME || '' }}
-  SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD || '' }}
-
 jobs:
-  build-deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set run date
-        id: date
-        run: |
-          if [ -n "${{ github.event.inputs.date }}" ]; then
-            echo "run_date=${{ github.event.inputs.date }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Generate demo stake cards
-        run: |
-          python -m cli.turf_cli demo-run --date "${{ steps.date.outputs.run_date }}" --out out/cards
-
-      - name: Render static site
-        run: |
-          python site/build_site.py --stake-cards out/cards --out public
-
-      - name: Upload stake cards artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: stake_cards-${{ steps.date.outputs.run_date }}
-          path: out/cards/*.json
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact for Pages
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-      - name: Deploy to Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
-      - name: Email site URL
-        if: ${{ env.MAIL_TO != '' && env.MAIL_FROM != '' && env.SMTP_SERVER != '' }}
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ env.SMTP_SERVER }}
-          server_port: ${{ env.SMTP_PORT || 465 }}
-          username: ${{ env.SMTP_USERNAME }}
-          password: ${{ env.SMTP_PASSWORD }}
-          subject: "TURF daily site for ${{ steps.date.outputs.run_date }}"
-          to: ${{ env.MAIL_TO }}
-          from: ${{ env.MAIL_FROM }}
-          secure: true
-          html_body: |
-            <p>The static site is live:</p>
-            <p><a href="${{ steps.deployment.outputs.page_url }}">${{ steps.deployment.outputs.page_url }}</a></p>
-            <p>Run date: ${{ steps.date.outputs.run_date }}</p>
-
-      - name: Job summary
-        run: |
-          echo "### Pages deploy" >> $GITHUB_STEP_SUMMARY
-          echo "- Run date: ${{ steps.date.outputs.run_date }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+  publish:
+    uses: ./.github/workflows/site_build_and_deploy.yml
+    with:
+      mode: demo-run
+      run_date: ${{ inputs.run_date || '' }}
+      stake_cards_path: out/stake_cards
+      send_email: ${{ inputs.send_email || false }}
+      upload_publish_json: true
+    secrets:
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM }}
+      MAIL_TO: ${{ secrets.MAIL_TO }}
