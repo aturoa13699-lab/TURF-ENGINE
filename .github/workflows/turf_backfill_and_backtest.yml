@@ -5,31 +5,36 @@ on:
     inputs:
       start_date:
         description: "Start date (YYYY-MM-DD)"
-        required: false
-        default: ""
+        required: true
+        default: "2025-12-01"
       end_date:
         description: "End date (YYYY-MM-DD)"
-        required: false
-        default: ""
+        required: true
+        default: "2025-12-15"
       model:
-        description: "Model identifier"
+        description: "Model/profile selector (if supported by your pipeline)"
         required: false
-        default: "LOGIT_WIN_PLACE_V0"
+        default: "lite"
+
+permissions:
+  contents: read
 
 env:
   PYTHON_VERSION: "3.11"
-  # Make repo-root imports work for *every* python invocation
   PYTHONPATH: ${{ github.workspace }}
 
 jobs:
   backfill:
+    name: Backfill + Backtest
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # Hard fail if anyone reintroduces file-mode CLI invocation
-      - name: Guardrail: forbid file-mode CLI
+      - name: "Guardrail: forbid file-mode CLI"
         run: |
           if grep -RIn --line-number -E 'python\s+cli/turf_cli\.py' .github/workflows; then
             echo "::error::File-mode CLI invocation found in workflows. Use: python -m cli.turf_cli"
@@ -45,49 +50,35 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e .
 
-      - name: Resolve date window
-        id: dates
+      - name: Run backfill & backtest
         run: |
-          START="${{ github.event.inputs.start_date }}"
-          END="${{ github.event.inputs.end_date }}"
-          if [ -z "$START" ]; then START="$(date -u +%Y-%m-%d)"; fi
-          if [ -z "$END" ]; then END="$START"; fi
-          echo "start=$START" >> "$GITHUB_OUTPUT"
-          echo "end=$END" >> "$GITHUB_OUTPUT"
+          set -euxo pipefail
+          mkdir -p out/backfill out/backtest out/diagnostics
 
-      - name: Init DB
-        run: |
-          python tools/db_init_if_missing.py --db data/turf.duckdb
+          # Run backtest using tools/backtest.py
+          # Note: Script expects --start/--end, not --start-date/--end-date
+          python tools/backtest.py \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
+            --model "${{ inputs.model }}" \
+            --out out/backtest
 
-      - name: Build demo cards (module mode)
+      - name: Diagnostics (optional)
+        if: ${{ always() }}
         run: |
-          python -m cli.turf_cli demo-run --date "${{ steps.dates.outputs.start }}" --out out/cards
-
-      - name: Append forecasts to DB
-        run: |
-          python tools/db_append.py --db data/turf.duckdb --cards out/cards --model "${{ github.event.inputs.model || 'LOGIT_WIN_PLACE_V0' }}"
-
-      - name: Backtest window
-        run: |
-          python tools/backtest.py --db data/turf.duckdb --model "${{ github.event.inputs.model || 'LOGIT_WIN_PLACE_V0' }}" --start "${{ steps.dates.outputs.start }}" --end "${{ steps.dates.outputs.end }}" --out out/reports
+          set -euxo pipefail
+          if [ -f scripts/diagnostics.py ]; then
+            python scripts/diagnostics.py --out out/diagnostics || true
+          fi
 
       - name: Upload artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: turf-backtest-${{ steps.dates.outputs.start }}
+          name: backfill_backtest_${{ inputs.start_date }}_to_${{ inputs.end_date }}
           path: |
-            data/turf.duckdb
-            out/cards/*.json
-            out/reports/backtest_metrics.json
-
-      - name: Job summary
-        run: |
-          echo "### Backfill & backtest" >> $GITHUB_STEP_SUMMARY
-          echo "- Range: ${{ steps.dates.outputs.start }} to ${{ steps.dates.outputs.end }}" >> $GITHUB_STEP_SUMMARY
-          if [ -f out/reports/backtest_metrics.json ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Metrics:" >> $GITHUB_STEP_SUMMARY
-            cat out/reports/backtest_metrics.json >> $GITHUB_STEP_SUMMARY
-          fi
+            out/**
+            !out/**/__pycache__/**
