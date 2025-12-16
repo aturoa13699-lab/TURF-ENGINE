@@ -191,8 +191,10 @@ jobs:
           echo "- Mode: ${{ inputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
 
+      # Email step: caller must set send_email=true AND provide secrets
+      # Note: secrets.* cannot be used in if: conditions for reusable workflows
       - name: Send email (optional)
-        if: ${{ inputs.send_email && secrets.SMTP_SERVER != '' && secrets.MAIL_TO != '' }}
+        if: ${{ inputs.send_email }}
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
