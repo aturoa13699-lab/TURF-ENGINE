@@ -1,5 +1,7 @@
 name: Publish site & email URL
 
+# Manual-only workflow for ad-hoc site publish/testing
+# Daily deploys are handled by site_daily.yml
 on:
   workflow_dispatch:
     inputs:
@@ -12,8 +14,6 @@ on:
         required: false
         type: boolean
         default: false
-  schedule:
-    - cron: "15 20 * * *"
 
 permissions:
   contents: read

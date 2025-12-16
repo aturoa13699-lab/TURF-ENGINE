@@ -2,12 +2,19 @@ name: TURF ENGINE LITE — Site
 
 on:
   schedule:
-    - cron: "30 3 * * *"
+    # 18:30 UTC = 05:30 AEDT (summer) / 04:30 AEST (winter)
+    # Runs 30 min after turf_daily to ensure artifacts are ready
+    - cron: "30 18 * * *"
   workflow_dispatch:
     inputs:
       date:
         description: "Run date (YYYY-MM-DD, Australia/Sydney). Defaults to today."
         required: false
+        type: string
+      send_email:
+        description: "Send email on manual run (true/false)"
+        required: false
+        default: "false"
         type: string
 
 permissions:
@@ -21,8 +28,9 @@ jobs:
     outputs:
       run_date: ${{ steps.date.outputs.run_date }}
       artifact_name: ${{ steps.date.outputs.artifact_name }}
+      should_email: ${{ steps.date.outputs.should_email }}
     steps:
-      - name: Resolve run date
+      - name: Resolve run date and email flag
         id: date
         run: |
           if [ -n "${{ github.event.inputs.date }}" ]; then
@@ -32,6 +40,16 @@ jobs:
           fi
           echo "run_date=${RUN_DATE}" >> "$GITHUB_OUTPUT"
           echo "artifact_name=turf-daily-${RUN_DATE}" >> "$GITHUB_OUTPUT"
+
+          # Email on schedule, or when manually requested
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "should_email=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.inputs.send_email }}" = "true" ]; then
+            echo "should_email=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_email=false" >> "$GITHUB_OUTPUT"
+          fi
+
           echo "Resolved: date=${RUN_DATE}, artifact=turf-daily-${RUN_DATE}"
 
   site:
@@ -42,5 +60,12 @@ jobs:
       run_date: ${{ needs.resolve-date.outputs.run_date }}
       artifact_name: ${{ needs.resolve-date.outputs.artifact_name }}
       stake_cards_path: out/stake_cards
-      send_email: false
+      send_email: ${{ needs.resolve-date.outputs.should_email == 'true' }}
       upload_publish_json: true
+    secrets:
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM }}
+      MAIL_TO: ${{ secrets.MAIL_TO }}
