@@ -3,21 +3,36 @@ on:
   push:
   pull_request:
 
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-          pip install -e .
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Guardrail - no secrets in if conditions
+        run: |
+          if grep -rE 'if:.*secrets\.' .github/workflows/*.yml; then
+            echo "::error::Found 'secrets.*' in if: condition. This breaks reusable workflows."
+            exit 1
+          fi
+
       - name: Run tests
         run: |
-          pytest -q
+          python -m pytest -q

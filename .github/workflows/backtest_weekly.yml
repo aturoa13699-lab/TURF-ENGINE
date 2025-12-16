@@ -1,0 +1,135 @@
+name: Weekly Backtest Report
+
+on:
+  schedule:
+    # Sunday 19:00 UTC = Monday 06:00 AEDT / 05:00 AEST
+    - cron: "0 19 * * 0"
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: "Number of days to backtest (default: 7)"
+        required: false
+        default: "7"
+        type: string
+      send_email:
+        description: "Send email report"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  backtest:
+    name: Weekly Backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Calculate date range
+        id: dates
+        run: |
+          set -euo pipefail
+          DAYS_BACK="${{ github.event.inputs.days_back || '7' }}"
+          END_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
+          START_DATE="$(TZ=Australia/Sydney date -d "${DAYS_BACK} days ago" +%Y-%m-%d)"
+          echo "start_date=${START_DATE}" >> "$GITHUB_OUTPUT"
+          echo "end_date=${END_DATE}" >> "$GITHUB_OUTPUT"
+          echo "Backtest range: ${START_DATE} to ${END_DATE}"
+
+      - name: Run backtest
+        run: |
+          set -euxo pipefail
+          mkdir -p out/backtest out/reports
+
+          python -m tools.backtest \
+            --start "${{ steps.dates.outputs.start_date }}" \
+            --end "${{ steps.dates.outputs.end_date }}" \
+            --model "lite" \
+            --out out/backtest
+
+      - name: Run analysis
+        run: |
+          set -euxo pipefail
+          if [ -f tools/analyze_backtest.py ]; then
+            python -m tools.analyze_backtest \
+              --metrics out/backtest/backtest_metrics.json \
+              --out out/reports/backtest_report.md
+          else
+            echo "# Weekly Backtest Report" > out/reports/backtest_report.md
+            echo "" >> out/reports/backtest_report.md
+            echo "**Period:** ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}" >> out/reports/backtest_report.md
+            echo "" >> out/reports/backtest_report.md
+            echo "## Metrics" >> out/reports/backtest_report.md
+            echo '```json' >> out/reports/backtest_report.md
+            cat out/backtest/backtest_metrics.json >> out/reports/backtest_report.md
+            echo '```' >> out/reports/backtest_report.md
+          fi
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "### Weekly Backtest Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Period:** ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f out/backtest/backtest_metrics.json ]; then
+            echo "#### Metrics" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat out/backtest/backtest_metrics.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest_weekly_${{ steps.dates.outputs.start_date }}_to_${{ steps.dates.outputs.end_date }}
+          path: |
+            out/backtest/**
+            out/reports/**
+
+      - name: Send email report
+        if: ${{ (github.event_name == 'schedule' || github.event.inputs.send_email == 'true') && env.SMTP_SERVER != '' }}
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: ${{ env.SMTP_PORT || 465 }}
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
+          subject: "TURF Weekly Backtest Report (${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }})"
+          to: ${{ env.MAIL_TO }}
+          from: ${{ env.MAIL_FROM }}
+          secure: true
+          html_body: |
+            <h2>Weekly Backtest Report</h2>
+            <p><strong>Period:</strong> ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}</p>
+            <p>See the GitHub Actions run for full details and downloadable artifacts.</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Run</a></p>
