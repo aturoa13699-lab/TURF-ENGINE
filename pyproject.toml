@@ -26,6 +26,9 @@ scrape = [
     "httpx>=0.28.1",
     "lxml>=5.3.0"
 ]
+pdf = [
+    "weasyprint>=62.0"
+]
 
 [project.scripts]
 turf = "turf.cli:app"
