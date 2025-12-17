@@ -3,6 +3,7 @@ set -euo pipefail
 
 EXPECTED_SUBSTRINGS=(
   "github.com/aturoa13699-lab/TURF-ENGINE"
+  "github.com:aturoa13699-lab/TURF-ENGINE"
 )
 
 if [[ -n "${ALLOWED_REPO_SUBSTRINGS:-}" ]]; then
