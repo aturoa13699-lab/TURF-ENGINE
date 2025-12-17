@@ -196,55 +196,65 @@ jobs:
         run: |
           set -euo pipefail
 
-          clean() { printf '%s' "${1:-}" | tr -d '\r\n'; }
-
-          MAIL_TO_CLEAN="$(clean "${MAIL_TO:-}")"
-          MAIL_FROM_CLEAN="$(clean "${MAIL_FROM:-}")"
-          SMTP_SERVER_CLEAN="$(clean "${SMTP_SERVER:-}")"
-          SMTP_PORT_CLEAN="$(clean "${SMTP_PORT:-}")"
-          SMTP_USERNAME_CLEAN="$(clean "${SMTP_USERNAME:-}")"
-          SMTP_PASSWORD_CLEAN="$(clean "${SMTP_PASSWORD:-}")"
-
           requested="${{ inputs.send_email }}"
-          smtp_port_set="true"
+          mail_to_set="false"
+          mail_from_set="false"
+          smtp_set="false"
+          auth_set="false"
+          smtp_port_set="false"
 
-          if [ -z "$SMTP_PORT_CLEAN" ]; then
-            SMTP_PORT_CLEAN="465"
-            smtp_port_set="false"
+          [ -n "${MAIL_TO:-}" ] && mail_to_set="true"
+          [ -n "${MAIL_FROM:-}" ] && mail_from_set="true"
+          [ -n "${SMTP_SERVER:-}" ] && smtp_set="true"
+          [ -n "${SMTP_USERNAME:-}" ] && [ -n "${SMTP_PASSWORD:-}" ] && auth_set="true"
+
+          smtp_port="${SMTP_PORT:-}"
+          if [ -n "$smtp_port" ]; then
+            smtp_port_set="true"
+          else
+            smtp_port="465"
           fi
 
-          missing=""
-          [ -n "$MAIL_TO_CLEAN" ] || missing="${missing} MAIL_TO"
-          [ -n "$MAIL_FROM_CLEAN" ] || missing="${missing} MAIL_FROM"
-          [ -n "$SMTP_SERVER_CLEAN" ] || missing="${missing} SMTP_SERVER"
-          [ -n "$SMTP_PORT_CLEAN" ] || missing="${missing} SMTP_PORT"
-          ( [ -n "$SMTP_USERNAME_CLEAN" ] && [ -n "$SMTP_PASSWORD_CLEAN" ] ) || missing="${missing} SMTP_USERNAME/SMTP_PASSWORD"
-
           can_email="false"
-          [ -z "$missing" ] && can_email="true"
+          missing=""
+
+          if [ "$mail_to_set" != "true" ]; then missing="${missing} MAIL_TO"; fi
+          if [ "$mail_from_set" != "true" ]; then missing="${missing} MAIL_FROM"; fi
+          if [ "$smtp_set" != "true" ]; then missing="${missing} SMTP_SERVER"; fi
+          if [ "$smtp_port_set" != "true" ]; then missing="${missing} SMTP_PORT"; fi
+          if [ "$auth_set" != "true" ]; then missing="${missing} SMTP_USERNAME/SMTP_PASSWORD"; fi
+
+          if [ -z "$missing" ]; then
+            can_email="true"
+          fi
 
           {
             echo "requested=${requested}"
             echo "can_email=${can_email}"
-            echo "smtp_port=${SMTP_PORT_CLEAN}"
+            echo "mail_to_set=${mail_to_set}"
+            echo "mail_from_set=${mail_from_set}"
+            echo "smtp_server_set=${smtp_set}"
+            echo "smtp_auth_set=${auth_set}"
+            echo "smtp_port=${smtp_port}"
             echo "smtp_port_set=${smtp_port_set}"
-            echo "missing<<EOF"
-            echo "${missing# }"
-            echo "EOF"
+            echo "missing=${missing# }"
           } >> "$GITHUB_OUTPUT"
 
           {
             echo "### Email status"
             echo "- send_email requested: ${requested}"
             echo "- can_email: ${can_email}"
-            echo "- smtp_port: ${SMTP_PORT_CLEAN}"
-            echo "- missing: ${missing# }"
+            echo "- smtp_port: ${smtp_port}"
+            if [ -n "$missing" ]; then
+              echo "- missing: ${missing# }"
+            else
+              echo "- missing: (none)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Email step: caller must set send_email=true AND provide secrets
       # Note: secrets.* cannot be used in if: conditions for reusable workflows
       - name: Send email (optional)
-        id: send_email
         if: ${{ inputs.send_email && steps.email_config.outputs.can_email == 'true' }}
         continue-on-error: true
         uses: dawidd6/action-send-mail@v3
@@ -264,31 +274,22 @@ jobs:
 
       - name: Email status summary
         if: ${{ always() }}
-        env:
-          EMAIL_ATTEMPTED: ${{ inputs.send_email && steps.email_config.outputs.can_email == 'true' }}
-          EMAIL_OUTCOME: ${{ steps.send_email.outcome || 'not_run' }}
-          EMAIL_CONCLUSION: ${{ steps.send_email.conclusion || 'not_run' }}
         run: |
           echo "### Email" >> "$GITHUB_STEP_SUMMARY"
           echo "- send_email input: ${{ inputs.send_email }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- can_email: ${{ steps.email_config.outputs.can_email }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- missing: ${{ steps.email_config.outputs.missing }}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${EMAIL_ATTEMPTED}" = "true" ]; then
-            echo "- attempted: true" >> "$GITHUB_STEP_SUMMARY"
-            echo "- send_mail outcome: ${EMAIL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
-            echo "- send_mail conclusion: ${EMAIL_CONCLUSION}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.send_email }}" = "true" ] && [ "${{ steps.email_config.outputs.can_email }}" = "true" ]; then
+            echo "- attempted: true (see Send email step)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- attempted: false" >> "$GITHUB_STEP_SUMMARY"
-            echo "- send_mail outcome: skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "- send_mail conclusion: skipped" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Job summary
         if: ${{ always() }}
         run: |
-          {
-            echo "### TURF ENGINE Site Publish"
-            echo "- Run date: ${{ steps.date.outputs.run_date }}"
-            echo "- Mode: ${{ inputs.mode }}"
-            echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "### TURF ENGINE Site Publish" >> $GITHUB_STEP_SUMMARY
+          echo "- Run date: ${{ steps.date.outputs.run_date }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Mode: ${{ inputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+            <p>Mode: ${{ inputs.mode }}</p>
