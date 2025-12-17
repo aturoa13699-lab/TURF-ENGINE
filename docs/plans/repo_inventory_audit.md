@@ -13,8 +13,8 @@
 
 ## Acceptance Criteria
 - Running `bash scripts/repo_inventory.sh` succeeds after repo identity verification and writes the requested markdown/json outputs under `out/diagnostics/`.
-- Markdown report includes identity, branches, recent history, workflows with triggers and Pages flag, guardrail hits, file inventory summary, changed files relative to the detected diff base, and quick risk notes.
-- JSON report includes identity, branches, workflows with trigger flags/schedules and Pages flag, file counts by top dir, guardrail hits arrays, and a diff block with base ref/merge-base plus changed files/count.
+- Markdown report includes identity, branches, recent history, workflows with triggers and Pages flag, guardrail hits, file inventory summary, and quick risk notes.
+- JSON report includes identity, branches, workflows with trigger flags/schedules and Pages flag, file counts by top dir, and guardrail hits arrays.
 - Script gracefully handles missing tools (e.g., uses find when tree is unavailable), keeps YAML parsing robust to `on` key boolean handling, and does not alter repository files.
 - If PyYAML is unavailable, falls back to Ruby for workflow parsing; if both are missing, emits a clear warning, skips trigger parsing, and still produces inventory outputs.
 - Manual GitHub Actions workflow exists to run the inventory helper, upload diagnostics artifacts, and surface a summary snippet in the job summary with read-only permissions.

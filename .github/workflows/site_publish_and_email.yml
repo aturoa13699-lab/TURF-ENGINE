@@ -29,5 +29,4 @@ jobs:
       stake_cards_path: out/stake_cards
       send_email: ${{ inputs.send_email || false }}
       upload_publish_json: true
-      render_derive_extras: false
     secrets: inherit
