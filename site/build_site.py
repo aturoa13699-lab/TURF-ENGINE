@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+from turf.race_summary import summarize_race
+from turf.value import derive_runner_value_fields
+
 STYLE_PATH = Path(__file__).resolve().parent / "static" / "styles.css"
 HEADER_TEMPLATE = Path(__file__).resolve().parent / "templates" / "header.html"
 FOOTER_TEMPLATE = Path(__file__).resolve().parent / "templates" / "footer.html"
@@ -32,6 +35,9 @@ class RunnerView:
     ev_1u: float | None
     certainty: float | None
     kelly_units: float
+    ev_band: str | None
+    ev_marker: str | None
+    risk_profile: str | None
 
 
 @dataclass
@@ -45,6 +51,7 @@ class RaceView:
     warnings: List[str]
     runners: List[RunnerView]
     artifact_name: str
+    race_summary: dict | None
 
     @property
     def top_runner(self) -> RunnerView:
@@ -109,6 +116,9 @@ def render_runner_row(runner: RunnerView) -> str:
     edge_text = f"{runner.value_edge:+.2%}" if runner.value_edge is not None else "—"
     ev_text = f"{runner.ev_1u:+.2f}" if runner.ev_1u is not None else "—"
     units = f"{runner.kelly_units:.2f}" if runner.kelly_units else "—"
+    ev_marker = runner.ev_marker or ""
+    band = runner.ev_band or ""
+    risk = runner.risk_profile or ""
     return """
     <tr>
       <td class="num">{runner_number}</td>
@@ -120,6 +130,9 @@ def render_runner_row(runner: RunnerView) -> str:
       <td class="num">{place}</td>
       <td class="num">{edge}</td>
       <td class="num">{ev}</td>
+      <td class="num">{ev_marker}</td>
+      <td class="num">{band}</td>
+      <td class="num">{risk}</td>
       <td class="num">{units}</td>
     </tr>
     """.format(
@@ -132,6 +145,9 @@ def render_runner_row(runner: RunnerView) -> str:
         place=place_text,
         edge=edge_text,
         ev=ev_text,
+        ev_marker=ev_marker,
+        band=band,
+        risk=risk,
         units=units,
     )
 
@@ -141,14 +157,36 @@ def render_race_page(race: RaceView, header: str, footer: str) -> str:
     warnings = ", ".join(race.warnings) if race.warnings else "None"
     title = f"{race.meeting_label} R{race.race_number}"
     page_header = apply_header(header, title=title, prefix="../")
+    summary_block = ""
+    if race.race_summary:
+        summary = race.race_summary
+        summary_block = """
+    <section class="race-summary">
+      <h2>Race summary</h2>
+      <ul>
+        <li><strong>Top picks:</strong> {top_picks}</li>
+        <li><strong>Value picks:</strong> {value_picks}</li>
+        <li><strong>Fades:</strong> {fades}</li>
+        <li><strong>Trap race:</strong> {trap_race}</li>
+        <li><strong>Strategy:</strong> {strategy}</li>
+      </ul>
+    </section>
+    """.format(
+            top_picks=summary.get("top_picks", []),
+            value_picks=summary.get("value_picks", []),
+            fades=summary.get("fades", []),
+            trap_race=summary.get("trap_race", False),
+            strategy=summary.get("strategy", ""),
+        )
     return page_header + f"""
   <main>
     <h1>{race.meeting_label} — Race {race.race_number}</h1>
     <p class="meta">Date: {race.date_local} · Distance: {race.distance_m or '—'}m · Degrade mode: {race.degrade_mode} · Warnings: {warnings}</p>
     <p class="meta">Source artifact: {race.artifact_name}</p>
+    {summary_block}
     <table class="runners">
       <thead>
-        <tr><th>#</th><th>Runner</th><th>Tag</th><th>LiteScore</th><th>Price</th><th>Win%</th><th>Place%</th><th>Value</th><th>EV (1u)</th><th>Units</th></tr>
+        <tr><th>#</th><th>Runner</th><th>Tag</th><th>LiteScore</th><th>Price</th><th>Win%</th><th>Place%</th><th>Value</th><th>EV (1u)</th><th>EV</th><th>Band</th><th>Risk</th><th>Units</th></tr>
       </thead>
       <tbody>
         {body_rows}
@@ -203,11 +241,28 @@ def render_index(site: SiteView, header: str, footer: str) -> str:
 """ + footer
 
 
-def parse_runner(runner: dict) -> RunnerView:
+VALUE_FIELDS = [
+    "ev",
+    "ev_band",
+    "ev_marker",
+    "confidence_class",
+    "risk_profile",
+    "model_vs_market_alert",
+]
+
+
+def parse_runner(runner: dict, *, derive_on_render: bool) -> RunnerView:
     odds_block = runner.get("odds_minimal") or {}
     price = odds_block.get("price_now_dec")
     forecast = runner.get("forecast") or {}
     win_prob = forecast.get("win_prob")
+
+    derived: dict[str, object | None] = {field: runner.get(field) for field in VALUE_FIELDS}
+    if derive_on_render:
+        computed = derive_runner_value_fields(runner)
+        for key, value in computed.items():
+            if derived.get(key) is None:
+                derived[key] = value
     return RunnerView(
         runner_number=runner["runner_number"],
         runner_name=runner.get("runner_name", ""),
@@ -220,10 +275,13 @@ def parse_runner(runner: dict) -> RunnerView:
         ev_1u=forecast.get("ev_1u"),
         certainty=forecast.get("certainty"),
         kelly_units=kelly_units(win_prob, price),
+        ev_band=derived.get("ev_band"),
+        ev_marker=derived.get("ev_marker"),
+        risk_profile=derived.get("risk_profile"),
     )
 
 
-def parse_stake_card(path: Path) -> List[RaceView]:
+def parse_stake_card(path: Path, *, derive_on_render: bool) -> List[RaceView]:
     payload = json.loads(path.read_text())
     meeting = payload.get("meeting", {})
     meeting_id = meeting.get("meeting_id", "UNKNOWN_MEETING")
@@ -231,7 +289,10 @@ def parse_stake_card(path: Path) -> List[RaceView]:
     date_local = meeting.get("date_local", "")
     races = []
     for race in payload.get("races", []):
-        runners = [parse_runner(r) for r in race.get("runners", [])]
+        runners = [parse_runner(r, derive_on_render=derive_on_render) for r in race.get("runners", [])]
+        race_summary = race.get("race_summary")
+        if race_summary is None and derive_on_render:
+            race_summary = summarize_race(race)
         races.append(
             RaceView(
                 meeting_id=meeting_id,
@@ -243,6 +304,7 @@ def parse_stake_card(path: Path) -> List[RaceView]:
                 warnings=payload.get("engine_context", {}).get("warnings", []),
                 runners=runners,
                 artifact_name=path.name,
+                race_summary=race_summary,
             )
         )
     return races
@@ -255,14 +317,14 @@ def copy_static(out_dir: Path) -> None:
     (static_dir / "styles.css").write_text(static_css, encoding="utf-8")
 
 
-def build_site(stake_dir: Path, out_dir: Path) -> None:
+def build_site(stake_dir: Path, out_dir: Path, *, derive_on_render: bool = False) -> None:
     stake_files = sorted(stake_dir.glob("*.json"))
     if not stake_files:
         raise SystemExit(f"No stake cards found in {stake_dir}")
 
     races: List[RaceView] = []
     for path in stake_files:
-        races.extend(parse_stake_card(path))
+        races.extend(parse_stake_card(path, derive_on_render=derive_on_render))
 
     site = SiteView(races=races)
     header, footer = load_templates()
@@ -286,9 +348,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render static pages from Lite stake cards")
     parser.add_argument("--stake-cards", type=Path, default=Path("out/stake_cards"), help="Directory containing stake card JSON files")
     parser.add_argument("--out", type=Path, default=Path("public"), help="Output directory for the static site")
+    parser.add_argument(
+        "--derive-on-render",
+        action="store_true",
+        help="Optionally derive EV/race summaries during rendering (default: off)",
+    )
     args = parser.parse_args()
 
-    build_site(args.stake_cards, args.out)
+    build_site(args.stake_cards, args.out, derive_on_render=args.derive_on_render)
 
 
 if __name__ == "__main__":

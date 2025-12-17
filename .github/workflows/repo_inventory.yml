@@ -1,0 +1,38 @@
+name: Repo Inventory Snapshot
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate inventory
+        run: bash scripts/repo_inventory.sh
+
+      - name: Summarize inventory
+        if: ${{ always() }}
+        run: |
+          SUMMARY="$GITHUB_STEP_SUMMARY"
+          if [ -f out/diagnostics/repo_inventory.md ]; then
+            {
+              echo "## Repo Inventory"
+              echo
+              sed -n '1,200p' out/diagnostics/repo_inventory.md
+            } >> "$SUMMARY"
+          else
+            echo "Repo inventory not generated" >> "$SUMMARY"
+          fi
+
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-inventory
+          path: out/diagnostics
