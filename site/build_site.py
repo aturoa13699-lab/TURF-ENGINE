@@ -249,7 +249,7 @@ VALUE_FIELDS = [
 ]
 
 
-def parse_runner(runner: dict, *, derive_on_render: bool = False) -> RunnerView:
+def parse_runner(runner: dict, *, derive_on_render: bool) -> RunnerView:
     odds_block = runner.get("odds_minimal") or {}
     price = odds_block.get("price_now_dec")
     forecast = runner.get("forecast") or {}
