@@ -12,6 +12,10 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
+from turf.feature_flags import resolve_feature_flags
+from turf.race_summary import summarize_race
+from turf.value import derive_runner_value_fields
+
 
 def canonical_json(obj: object) -> str:
     return json.dumps(obj, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -323,14 +327,21 @@ def apply_pro_overlay_to_stake_card(
     *,
     overlay_writer: str = "PRO_OVERLAY_LOGIT_WIN_PLACE_V0",
     tau: float = 0.12,
+    feature_flags: Dict[str, bool] | None = None,
 ) -> dict:
     output = json.loads(json.dumps(stake_card))  # deep copy
+    flags = resolve_feature_flags(feature_flags)
     races = output.get("races", [])
     for race in races:
         for runner in race.get("runners", []):
             rn = runner.get("runner_number")
             if rn in forecasts:
                 runner["forecast"] = forecasts[rn]
+                if flags.get("ev_bands"):
+                    derived = derive_runner_value_fields(runner)
+                    runner.update(derived)
+        if flags.get("race_summary"):
+            race["race_summary"] = summarize_race(race)
     ctx = output.setdefault("engine_context", {})
     debug = ctx.setdefault("debug", {})
     debug["overlay_writer"] = overlay_writer
