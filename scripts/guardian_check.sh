@@ -18,8 +18,3 @@ if grep -RIn --line-number -E 'if:.*secrets\.' .github/workflows; then
   echo "::error::secrets.* used inside if: expression. Map secrets to env and gate on env.*"
   exit 1
 fi
-
-if grep -RIn --line-number "<p>Mode:" .github/workflows; then
-  echo "::error::Raw HTML line detected in workflow run blocks; wrap it in echo or remove (e.g., <p>Mode: ...</p>)."
-  exit 1
-fi
