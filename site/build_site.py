@@ -157,8 +157,9 @@ def render_race_page(race: RaceView, header: str, footer: str) -> str:
     warnings = ", ".join(race.warnings) if race.warnings else "None"
     title = f"{race.meeting_label} R{race.race_number}"
     page_header = apply_header(header, title=title, prefix="../")
-    summary = race.race_summary or {}
-    summary_block = """
+    summary = race.race_summary
+    if summary:
+        summary_block = """
     <section class="race-summary">
       <h2>Race summary</h2>
       <ul>
@@ -170,12 +171,14 @@ def render_race_page(race: RaceView, header: str, footer: str) -> str:
       </ul>
     </section>
     """.format(
-        top_picks=summary.get("top_picks", []),
-        value_picks=summary.get("value_picks", []),
-        fades=summary.get("fades", []),
-        trap_race=summary.get("trap_race", False),
-        strategy=summary.get("strategy", ""),
-    )
+            top_picks=summary.get("top_picks", []),
+            value_picks=summary.get("value_picks", []),
+            fades=summary.get("fades", []),
+            trap_race=summary.get("trap_race", False),
+            strategy=summary.get("strategy", ""),
+        )
+    else:
+        summary_block = ""
     return page_header + f"""
   <main>
     <h1>{race.meeting_label} — Race {race.race_number}</h1>
@@ -249,7 +252,7 @@ VALUE_FIELDS = [
 ]
 
 
-def parse_runner(runner: dict, *, derive_on_render: bool) -> RunnerView:
+def parse_runner(runner: dict, *, derive_on_render: bool = False) -> RunnerView:
     odds_block = runner.get("odds_minimal") or {}
     price = odds_block.get("price_now_dec")
     forecast = runner.get("forecast") or {}
@@ -281,8 +284,11 @@ def parse_stake_card(path: Path, *, derive_on_render: bool) -> List[RaceView]:
     date_local = meeting.get("date_local", "")
     races = []
     for race in payload.get("races", []):
-        runners = [parse_runner(r) for r in race.get("runners", [])]
-        race_summary = race.get("race_summary") or summarize_race(race)
+        runners = [parse_runner(r, derive_on_render=derive_on_render) for r in race.get("runners", [])]
+        if derive_on_render:
+            race_summary = race.get("race_summary") or summarize_race(race)
+        else:
+            race_summary = race.get("race_summary")
         races.append(
             RaceView(
                 meeting_id=meeting_id,
