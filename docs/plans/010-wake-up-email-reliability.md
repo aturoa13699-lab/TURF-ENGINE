@@ -5,8 +5,6 @@
 - Include Sydney-local run timestamp, Pages URL, and a clear email status line (sent/skipped + reason) in the job summary.
 - Keep optional weather/rail context strictly conditional on existing inputs; no new network calls by default.
 - Ensure wrappers inherit secrets and the reusable workflow maps SMTP/mail secrets to env defaults (including SMTP_PORT) before gating on `can_email`.
-- Secrets must be single-line (no embedded newlines); email config trims CR/LF before outputs to avoid GITHUB_OUTPUT format errors.
-- Repo identity guard must accept both HTTPS and SSH remote forms for the TURF-ENGINE repo (e.g., `https://github.com/aturoa13699-lab/TURF-ENGINE.git` and `git@github.com:aturoa13699-lab/TURF-ENGINE.git`).
 
 ## Invariants / Risks
 - TURF_ENGINE_LITE outputs remain unchanged; only workflows and summaries are touched.
@@ -15,17 +13,11 @@
 
 ## Acceptance Criteria
 - Workflow summary includes: Sydney-local timestamp, Pages URL, and an “email status” line showing sent/skipped with reason.
-- Job summary block is shell-safe (no bare HTML/raw lines) so summary generation cannot fail after deploy/email.
-- Guardian check fails if raw HTML lines (e.g., `<p>...`) are present in workflow run blocks to prevent bash parse errors, and
-  YAML-parsed run blocks are scanned to catch any bare HTML lines (not just `<p>Mode: ...</p>`).
-- Guardian check enforces that the reusable workflow Job summary `run: |` block contains only echo/comment/{ } lines to avoid
-  shell parse errors from stray text/HTML, and requires the summary to emit the Run date, Mode, and Pages URL lines via echo.
 - Wrapper workflows pass SMTP secrets via `secrets: inherit`, and the reusable workflow maps them to env with safe defaults (SMTP_PORT default 465) before gating email.
 - Secret-backed values are never printed; summaries show only presence/status booleans.
 - Optional weather/rail fields appear only when already available from inputs/artifacts; defaults avoid network calls.
 - Deploy/job succeeds even when email config is incomplete or send step fails.
-- Email summary clearly reports send intent, `can_email`, missing vars, whether send was attempted, and the send-mail outcome/conclusion when attempted.
-- Email config sanitizes CR/LF from SMTP/email env values before writing outputs to prevent malformed GITHUB_OUTPUT parsing.
+- Email summary clearly reports send intent, `can_email`, missing vars, and whether send was attempted.
 
 ## Verification / Commands
 - `bash scripts/audit_all.sh`

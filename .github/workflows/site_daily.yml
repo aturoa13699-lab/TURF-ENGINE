@@ -62,5 +62,4 @@ jobs:
       stake_cards_path: out/stake_cards
       send_email: ${{ needs.resolve-date.outputs.should_email == 'true' }}
       upload_publish_json: true
-      render_derive_extras: false
     secrets: inherit
