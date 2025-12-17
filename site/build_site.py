@@ -239,7 +239,17 @@ def render_index(site: SiteView, header: str, footer: str) -> str:
 """ + footer
 
 
-def parse_runner(runner: dict) -> RunnerView:
+VALUE_FIELDS = [
+    "ev",
+    "ev_band",
+    "ev_marker",
+    "confidence_class",
+    "risk_profile",
+    "model_vs_market_alert",
+]
+
+
+def parse_runner(runner: dict, *, derive_on_render: bool) -> RunnerView:
     odds_block = runner.get("odds_minimal") or {}
     price = odds_block.get("price_now_dec")
     forecast = runner.get("forecast") or {}
@@ -263,7 +273,7 @@ def parse_runner(runner: dict) -> RunnerView:
     )
 
 
-def parse_stake_card(path: Path) -> List[RaceView]:
+def parse_stake_card(path: Path, *, derive_on_render: bool) -> List[RaceView]:
     payload = json.loads(path.read_text())
     meeting = payload.get("meeting", {})
     meeting_id = meeting.get("meeting_id", "UNKNOWN_MEETING")
@@ -297,14 +307,14 @@ def copy_static(out_dir: Path) -> None:
     (static_dir / "styles.css").write_text(static_css, encoding="utf-8")
 
 
-def build_site(stake_dir: Path, out_dir: Path) -> None:
+def build_site(stake_dir: Path, out_dir: Path, *, derive_on_render: bool = False) -> None:
     stake_files = sorted(stake_dir.glob("*.json"))
     if not stake_files:
         raise SystemExit(f"No stake cards found in {stake_dir}")
 
     races: List[RaceView] = []
     for path in stake_files:
-        races.extend(parse_stake_card(path))
+        races.extend(parse_stake_card(path, derive_on_render=derive_on_render))
 
     site = SiteView(races=races)
     header, footer = load_templates()
@@ -328,9 +338,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render static pages from Lite stake cards")
     parser.add_argument("--stake-cards", type=Path, default=Path("out/stake_cards"), help="Directory containing stake card JSON files")
     parser.add_argument("--out", type=Path, default=Path("public"), help="Output directory for the static site")
+    parser.add_argument(
+        "--derive-on-render",
+        action="store_true",
+        help="Optionally derive EV/race summaries during rendering (default: off)",
+    )
     args = parser.parse_args()
 
-    build_site(args.stake_cards, args.out)
+    build_site(args.stake_cards, args.out, derive_on_render=args.derive_on_render)
 
 
 if __name__ == "__main__":

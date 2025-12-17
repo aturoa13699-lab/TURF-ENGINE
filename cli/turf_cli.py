@@ -230,6 +230,9 @@ def apply_overlay(
 def render_site(
     stake_cards: pathlib.Path = typer.Option(Path("out/cards"), exists=True, help="Directory containing stake card JSON files"),
     out: pathlib.Path = typer.Option(Path("public"), help="Output directory for static site"),
+    derive_on_render: bool = typer.Option(
+        False, help="Optionally derive EV/race summaries during rendering (default: off)"
+    ),
 ):
     """Render static site from stake cards using the bundled renderer."""
 
@@ -239,7 +242,7 @@ def render_site(
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)  # type: ignore[arg-type]
-    module.build_site(stake_cards, out)
+    module.build_site(stake_cards, out, derive_on_render=derive_on_render)
     typer.echo(f"Site rendered to {out}")
 
 
