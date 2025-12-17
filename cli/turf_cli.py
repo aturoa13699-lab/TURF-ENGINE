@@ -324,5 +324,62 @@ def view_stake_card(
     typer.echo("\n".join(lines))
 
 
+@app.command("preview")
+def preview(
+    stake_cards: pathlib.Path = typer.Option(
+        Path("out/cards"), "--stake-cards", exists=True, help="Directory containing stake card JSON files"
+    ),
+    out: pathlib.Path = typer.Option(Path("out/previews"), "--out", help="Output directory for HTML/PDF files"),
+    format: str = typer.Option("html", "--format", help="Output format: html, pdf, or both"),
+    single: Optional[pathlib.Path] = typer.Option(
+        None, "--single", help="Render a single stake card file instead of directory"
+    ),
+    use_pro: bool = typer.Option(
+        False, "--use-pro", help="Prefer stake_card_pro.json if available"
+    ),
+):
+    """Generate race preview documents (HTML/PDF) from stake cards.
+
+    This command produces deterministic preview outputs suitable for email
+    attachments or printing. PDF generation requires the [pdf] extra:
+    pip install turf[pdf]
+
+    PRO fields (EV markers, risk profiles, race summaries) are rendered
+    only if present in the input stake card. No derivation is performed.
+    """
+    from turf.pdf_race_preview import render_previews, render_single_preview
+
+    generate_pdf = format.lower() in ("pdf", "both")
+
+    if single:
+        # Single file mode
+        if not single.exists():
+            typer.echo(f"Error: File not found: {single}", err=True)
+            raise typer.Exit(1)
+
+        result = render_single_preview(single, out, generate_pdf=generate_pdf)
+        typer.echo(f"HTML: {result['html']}")
+        if result.get("pdf"):
+            typer.echo(f"PDF: {result['pdf']}")
+        elif result.get("pdf_error"):
+            typer.echo(f"PDF skipped: {result['pdf_error']}")
+    else:
+        # Directory mode
+        if not stake_cards.is_dir():
+            typer.echo(f"Error: Not a directory: {stake_cards}", err=True)
+            raise typer.Exit(1)
+
+        results = render_previews(stake_cards, out, generate_pdf=generate_pdf)
+
+        if not results:
+            typer.echo(f"No stake cards found in {stake_cards}")
+            raise typer.Exit(1)
+
+        typer.echo(f"Rendered {len(results)} preview(s) to {out}")
+        for r in results:
+            pdf_info = r.get("pdf", r.get("pdf_error", "skipped"))
+            typer.echo(f"  - {r['meeting_id']}: HTML={r['html']}, PDF={pdf_info}")
+
+
 if __name__ == "__main__":
     app()
