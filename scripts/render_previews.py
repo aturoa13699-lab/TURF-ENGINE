@@ -1,5 +1,18 @@
 """Render race previews as HTML and optionally PDF.
 
+DEPRECATED: This module is superseded by turf.pdf_race_preview which provides:
+- Deterministic output (no live timestamps)
+- Proper file filtering (stake_card*.json only)
+- Deduplication by (date, meeting_id)
+- CLI integration via `python -m cli.turf_cli preview`
+
+Use instead:
+    PYTHONPATH=. python -m cli.turf_cli preview --stake-cards out/cards --out out/previews
+
+This file is retained for backwards compatibility but will be removed in a future release.
+
+---
+
 This module generates formatted race preview documents from stake cards,
 suitable for email attachments or printing.
 

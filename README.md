@@ -40,6 +40,24 @@ turf plan --registry data/nsw_seed.json --date 2025-12-09 --states NSW --tracks 
 cat plan.json
 ```
 
+## Race Previews (HTML/PDF)
+
+Generate deterministic race preview documents from stake cards:
+
+```bash
+# HTML preview (default, read-only)
+PYTHONPATH=. python -m cli.turf_cli preview --stake-cards out/cards --out out/previews
+
+# PDF generation (requires weasyprint)
+pip install .[pdf]
+PYTHONPATH=. python -m cli.turf_cli preview --stake-cards out/cards --out out/previews --format pdf
+
+# Single file mode
+PYTHONPATH=. python -m cli.turf_cli preview --single out/cards/stake_card.json --out out/previews
+```
+
+PRO fields (EV markers, risk profiles, race summaries) are rendered **only if present** in the stake card. No derivation is performed — previews are read-only.
+
 ## Repo layout
 
 - `turf/models.py` — Pydantic models
