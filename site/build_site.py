@@ -157,10 +157,8 @@ def render_race_page(race: RaceView, header: str, footer: str) -> str:
     warnings = ", ".join(race.warnings) if race.warnings else "None"
     title = f"{race.meeting_label} R{race.race_number}"
     page_header = apply_header(header, title=title, prefix="../")
-    summary_block = ""
-    if race.race_summary:
-        summary = race.race_summary
-        summary_block = """
+    summary = race.race_summary or {}
+    summary_block = """
     <section class="race-summary">
       <h2>Race summary</h2>
       <ul>
@@ -172,12 +170,12 @@ def render_race_page(race: RaceView, header: str, footer: str) -> str:
       </ul>
     </section>
     """.format(
-            top_picks=summary.get("top_picks", []),
-            value_picks=summary.get("value_picks", []),
-            fades=summary.get("fades", []),
-            trap_race=summary.get("trap_race", False),
-            strategy=summary.get("strategy", ""),
-        )
+        top_picks=summary.get("top_picks", []),
+        value_picks=summary.get("value_picks", []),
+        fades=summary.get("fades", []),
+        trap_race=summary.get("trap_race", False),
+        strategy=summary.get("strategy", ""),
+    )
     return page_header + f"""
   <main>
     <h1>{race.meeting_label} — Race {race.race_number}</h1>
@@ -251,18 +249,12 @@ VALUE_FIELDS = [
 ]
 
 
-def parse_runner(runner: dict, *, derive_on_render: bool = False) -> RunnerView:
+def parse_runner(runner: dict, *, derive_on_render: bool) -> RunnerView:
     odds_block = runner.get("odds_minimal") or {}
     price = odds_block.get("price_now_dec")
     forecast = runner.get("forecast") or {}
     win_prob = forecast.get("win_prob")
-
-    derived: dict[str, object | None] = {field: runner.get(field) for field in VALUE_FIELDS}
-    if derive_on_render:
-        computed = derive_runner_value_fields(runner)
-        for key, value in computed.items():
-            if derived.get(key) is None:
-                derived[key] = value
+    derived = derive_runner_value_fields(runner)
     return RunnerView(
         runner_number=runner["runner_number"],
         runner_name=runner.get("runner_name", ""),
@@ -281,7 +273,7 @@ def parse_runner(runner: dict, *, derive_on_render: bool = False) -> RunnerView:
     )
 
 
-def parse_stake_card(path: Path, *, derive_on_render: bool = False) -> List[RaceView]:
+def parse_stake_card(path: Path, *, derive_on_render: bool) -> List[RaceView]:
     payload = json.loads(path.read_text())
     meeting = payload.get("meeting", {})
     meeting_id = meeting.get("meeting_id", "UNKNOWN_MEETING")
@@ -289,13 +281,8 @@ def parse_stake_card(path: Path, *, derive_on_render: bool = False) -> List[Race
     date_local = meeting.get("date_local", "")
     races = []
     for race in payload.get("races", []):
-        runners = [
-            parse_runner(runner=r, derive_on_render=derive_on_render)
-            for r in race.get("runners", [])
-        ]
-        race_summary = race.get("race_summary")
-        if race_summary is None and derive_on_render:
-            race_summary = summarize_race(race)
+        runners = [parse_runner(r) for r in race.get("runners", [])]
+        race_summary = race.get("race_summary") or summarize_race(race)
         races.append(
             RaceView(
                 meeting_id=meeting_id,

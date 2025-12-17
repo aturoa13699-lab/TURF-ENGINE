@@ -11,10 +11,9 @@
 - Email remains optional and non-blocking with secrets redacted from logs and summaries.
 
 ## Acceptance Criteria
-- Outputs include `out/backtest/report.md`, `out/backtest/metrics.json`, `out/backtest/metrics_summary.json`, `out/backtest/patch_candidates.md`, `out/backtest/loss_clusters.json`, and `out/backtest/experiments.yml`.
+- Outputs include `out/backtest/report.md`, `out/backtest/metrics.json`, `out/backtest/patch_candidates.md`, `out/backtest/loss_clusters.json`, and `out/backtest/experiments.yml`.
 - Report includes a “Next Experiments” section generated from `experiments.yml` with flag-only recommendations.
-- Scheduled workflow uploads artifacts and gates email sending on env-based readiness (`send_email && can_email`) with non-blocking email.
-- Workflow input `send_email` and artifact summary (top patch candidates) are written to the job summary; no secrets or derived-only fields leak when disabled.
+- Scheduled workflow uploads artifacts and gates email sending on env-based readiness (`send_email && can_email`).
 
 ## Verification / Commands
 - `bash scripts/audit_all.sh`
