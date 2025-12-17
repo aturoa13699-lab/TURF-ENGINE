@@ -52,32 +52,6 @@ export REPO_INV_OUT_DIR="$OUT_DIR"
 export REPO_INV_TREE_TOOL="$TREE_TOOL"
 export REPO_INV_GENERATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-# Identify a diff base for changed file inventory (best effort, non-fatal)
-BASE_REF=""
-if git rev-parse --verify origin/main >/dev/null 2>&1; then
-  BASE_REF="origin/main"
-elif git rev-parse --verify main >/dev/null 2>&1; then
-  BASE_REF="main"
-elif git rev-parse --verify origin/master >/dev/null 2>&1; then
-  BASE_REF="origin/master"
-fi
-
-BASE_MERGE=""
-if [[ -n "$BASE_REF" ]]; then
-  BASE_MERGE="$(git merge-base HEAD "$BASE_REF" || true)"
-fi
-
-changed_files_path="$OUT_DIR/changed_files.txt"
-if [[ -n "$BASE_MERGE" ]]; then
-  git diff --name-only "$BASE_MERGE"...HEAD >"$changed_files_path" || true
-else
-  echo "BASE_NOT_FOUND" >"$changed_files_path"
-fi
-
-export REPO_INV_BASE_REF="$BASE_REF"
-export REPO_INV_BASE_MERGE="$BASE_MERGE"
-export REPO_INV_CHANGED_FILES_PATH="$changed_files_path"
-
 python <<'PY'
 import json
 import os
@@ -97,9 +71,6 @@ HAVE_PYYAML = yaml is not None
 OUT_DIR = Path(os.environ["REPO_INV_OUT_DIR"])
 TREE_TOOL = os.environ.get("REPO_INV_TREE_TOOL", "tree")
 GENERATED_AT = os.environ.get("REPO_INV_GENERATED_AT", "")
-BASE_REF = os.environ.get("REPO_INV_BASE_REF", "")
-BASE_MERGE = os.environ.get("REPO_INV_BASE_MERGE", "")
-CHANGED_FILES_PATH = Path(os.environ.get("REPO_INV_CHANGED_FILES_PATH", OUT_DIR / "changed_files.txt"))
 
 file_mode_hits_path = OUT_DIR / "file_mode_cli_hits.txt"
 secrets_if_hits_path = OUT_DIR / "secrets_in_if_hits.txt"
@@ -107,7 +78,6 @@ git_files_path = OUT_DIR / "git_files.txt"
 tree_path = OUT_DIR / "tree.txt"
 md_path = OUT_DIR / "repo_inventory.md"
 json_path = OUT_DIR / "repo_inventory.json"
-changed_files_path = CHANGED_FILES_PATH
 
 
 def cmd(args):
@@ -248,10 +218,6 @@ for path in git_files:
     top = path.split("/", 1)[0] if "/" in path else "."
     counter[top] += 1
 
-changed_files = []
-if changed_files_path.exists():
-    changed_files = [line for line in changed_files_path.read_text().splitlines() if line.strip()]
-
 origin_urls = []
 for line in remotes.splitlines():
     parts = line.split()
@@ -281,12 +247,6 @@ json_payload = {
         "file_mode_cli_hits": file_mode_hits,
         "secrets_in_if_hits": secrets_if_hits,
     },
-    "diff": {
-        "base_ref": BASE_REF,
-        "base_merge": BASE_MERGE,
-        "changed_files": changed_files,
-        "changed_count": len(changed_files),
-    },
 }
 
 json_path.write_text(json.dumps(json_payload, indent=2))
@@ -302,7 +262,6 @@ md_lines = [
     remotes or "(none)",
     f"current branch: {branch}",
     f"HEAD: {head}",
-    f"diff base: {BASE_REF or 'unset'} (merge-base: {BASE_MERGE or 'unset'})",
     "```",
     "",
     "## Branches",
@@ -380,16 +339,6 @@ md_lines.extend([
     tree_path.read_text(),
     "```",
 ])
-
-# Changed files summary (relative to diff base)
-md_lines.extend([
-    "",
-    "## Changed files (relative to diff base)",
-    f"- base: {BASE_REF or 'unset'} (merge-base: {BASE_MERGE or 'unset'})",
-    f"- count: {len(changed_files)}",
-])
-if changed_files:
-    md_lines.extend(["", "```", *changed_files, "```", ""])
 
 quick_risks = []
 if missing_scripts:
