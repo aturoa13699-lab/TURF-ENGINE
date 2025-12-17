@@ -16,11 +16,16 @@ from engine.turf_engine_pro import (
     overlay_from_stake_card,
     pro_overlay_logit_win_place_v0,
 )
+from turf.feature_flags import resolve_feature_flags
+from turf.race_summary import summarize_race
+from turf.value import derive_runner_value_fields
 from turf.compile_lite import RunnerInput, compile_stake_card, merge_odds_into_market
 from turf.parse_odds import parse_generic_odds_table, parsed_odds_to_market
 from turf.parse_ra import parsed_race_to_market_snapshot, parsed_race_to_speed_sidecar, parse_meeting_html
 
 app = typer.Typer(help="End-to-end TURF demo runner with overlays and site hooks")
+view_app = typer.Typer(help="Read-only stake-card viewers")
+app.add_typer(view_app, name="view")
 
 
 def _load_demo_artifacts(date: str) -> tuple[dict, dict, dict]:
@@ -81,10 +86,52 @@ def _build_engine_inputs(market: dict, speed: dict, lite_scores: dict) -> dict:
     }
 
 
+def _runner_value_fields(runner: dict) -> dict:
+    derived = derive_runner_value_fields(runner)
+    forecast = runner.get("forecast") or {}
+    odds = (runner.get("odds_minimal") or {}).get("price_now_dec")
+    return {
+        **derived,
+        "price": odds,
+        "value_edge": forecast.get("value_edge"),
+        "win_prob": forecast.get("win_prob"),
+        "runner_number": runner.get("runner_number"),
+        "runner_name": runner.get("runner_name", ""),
+        "lite_score": runner.get("lite_score", 0.0),
+        "lite_tag": runner.get("lite_tag", "PASS_LITE"),
+    }
+
+
+def _format_runner_mobile(runner: dict) -> str:
+    ev_marker = runner.get("ev_marker") or "·"
+    price = runner.get("price")
+    price_text = f"@ {price:.2f}" if isinstance(price, (int, float)) else "@ —"
+    edge = runner.get("value_edge")
+    edge_text = f"{edge:+.1%}" if isinstance(edge, (int, float)) else "—"
+    return f"{ev_marker} #{runner.get('runner_number')}: {runner.get('runner_name','')} {price_text} | edge {edge_text}"
+
+
+def _format_runner_pretty(runner: dict) -> str:
+    ev_band = runner.get("ev_band") or "?"
+    risk = runner.get("risk_profile") or "?"
+    price = runner.get("price")
+    price_text = f"{price:.2f}" if isinstance(price, (int, float)) else "—"
+    edge = runner.get("value_edge")
+    edge_text = f"{edge:+.2%}" if isinstance(edge, (int, float)) else "—"
+    ev_val = runner.get("ev")
+    ev_text = f"{ev_val:+.2f}" if isinstance(ev_val, (int, float)) else "—"
+    return (
+        f"#{runner.get('runner_number')} {runner.get('runner_name','')} | price {price_text} | "
+        f"edge {edge_text} | ev {ev_text} | band {ev_band} | risk {risk}"
+    )
+
+
 @app.command()
 def demo_run(
     out: pathlib.Path = typer.Option(Path("out/cards"), "--out", help="Directory for generated stake cards"),
     date: Optional[str] = typer.Option(None, help="Date stamp for demo meeting (YYYY-MM-DD)"),
+    enable_value_fields: bool = typer.Option(False, help="Enable PRO value/race summary derived fields (Plan 020)"),
+    enable_race_summary: bool = typer.Option(False, help="Enable race summary block in PRO output"),
 ):
     """Run the full Lite + PRO overlay pipeline using bundled demo fixtures."""
 
@@ -112,7 +159,18 @@ def demo_run(
         stake_card.get("engine_context", {}).get("degrade_mode", "NORMAL"),
         stake_card.get("engine_context", {}).get("warnings", []),
     )
-    stake_card_pro = apply_pro_overlay_to_stake_card(stake_card, runner_vector_payload, forecasts)
+    feature_flags = resolve_feature_flags(
+        {
+            "ev_bands": enable_value_fields or enable_race_summary,
+            "race_summary": enable_race_summary,
+        }
+    )
+    stake_card_pro = apply_pro_overlay_to_stake_card(
+        stake_card,
+        runner_vector_payload,
+        forecasts,
+        feature_flags=feature_flags,
+    )
 
     lite_path = out / "stake_card.json"
     pro_path = out / "stake_card_pro.json"
@@ -128,6 +186,8 @@ def apply_overlay(
     stake_card_path: pathlib.Path = typer.Option(..., exists=True, help="Path to stake_card JSON"),
     out: pathlib.Path = typer.Option(..., help="Where to write overlay-updated stake_card"),
     runner_vector_path: Optional[pathlib.Path] = typer.Option(None, help="Optional precomputed runner_vector JSON"),
+    enable_value_fields: bool = typer.Option(False, help="Enable PRO value/race summary derived fields (Plan 020)"),
+    enable_race_summary: bool = typer.Option(False, help="Enable race summary block in PRO output"),
 ):
     """Apply the deterministic PRO overlay to an existing stake card."""
 
@@ -149,7 +209,18 @@ def apply_overlay(
         stake_card.get("engine_context", {}).get("degrade_mode", "NORMAL"),
         stake_card.get("engine_context", {}).get("warnings", []),
     )
-    updated = apply_pro_overlay_to_stake_card(stake_card, runner_vector_payload, forecasts)
+    feature_flags = resolve_feature_flags(
+        {
+            "ev_bands": enable_value_fields or enable_race_summary,
+            "race_summary": enable_race_summary,
+        }
+    )
+    updated = apply_pro_overlay_to_stake_card(
+        stake_card,
+        runner_vector_payload,
+        forecasts,
+        feature_flags=feature_flags,
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(updated, indent=2))
     typer.echo(f"Overlay applied and written to {out}")
@@ -159,6 +230,9 @@ def apply_overlay(
 def render_site(
     stake_cards: pathlib.Path = typer.Option(Path("out/cards"), exists=True, help="Directory containing stake card JSON files"),
     out: pathlib.Path = typer.Option(Path("public"), help="Output directory for static site"),
+    derive_on_render: bool = typer.Option(
+        False, help="Optionally derive EV/race summaries during rendering (default: off)"
+    ),
 ):
     """Render static site from stake cards using the bundled renderer."""
 
@@ -168,8 +242,86 @@ def render_site(
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)  # type: ignore[arg-type]
-    module.build_site(stake_cards, out)
+    module.build_site(stake_cards, out, derive_on_render=derive_on_render)
     typer.echo(f"Site rendered to {out}")
+
+
+@app.command("filter-value")
+def filter_value(
+    stake_card_path: pathlib.Path = typer.Option(
+        ..., "--stake-card", "--stake-card-path", exists=True, help="Path to stake_card PRO JSON"
+    ),
+    min_ev: float = typer.Option(0.05, help="Minimum EV (1u) to include"),
+    max_price: float = typer.Option(20.0, help="Maximum price to include"),
+    out: pathlib.Path = typer.Option(Path("out/derived/value_filter.json"), help="Where to write filtered runner list"),
+):
+    """Filter runners by EV and price from a stake card (PRO derived)."""
+
+    payload = json.loads(stake_card_path.read_text())
+    race = (payload.get("races") or [{}])[0]
+    meeting = payload.get("meeting", {})
+    filtered = []
+    for runner in race.get("runners", []):
+        derived = _runner_value_fields(runner)
+        ev_val = derived.get("ev")
+        price = derived.get("price")
+        if ev_val is None or ev_val < min_ev:
+            continue
+        if isinstance(price, (int, float)) and price > max_price:
+            continue
+        filtered.append(
+            {
+                "runner_number": derived.get("runner_number"),
+                "runner_name": derived.get("runner_name"),
+                "price": price,
+                "ev": ev_val,
+                "ev_band": derived.get("ev_band"),
+                "ev_marker": derived.get("ev_marker"),
+                "value_edge": derived.get("value_edge"),
+                "risk_profile": derived.get("risk_profile"),
+            }
+        )
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(
+            {
+                "meeting": meeting,
+                "race_number": race.get("race_number"),
+                "filters": {"min_ev": min_ev, "max_price": max_price},
+                "runners": filtered,
+            },
+            indent=2,
+        )
+    )
+    typer.echo(f"Wrote {out} ({len(filtered)} runners)")
+
+
+@view_app.command("stake-card")
+def view_stake_card(
+    stake_card_path: pathlib.Path = typer.Option(
+        ..., "--stake-card", "--stake-card-path", exists=True, help="Path to stake_card or stake_card_pro JSON"
+    ),
+    format: str = typer.Option("mobile", help="Output format: mobile or pretty"),
+):
+    """Render a stake card in a human-friendly, read-only view."""
+
+    payload = json.loads(stake_card_path.read_text())
+    race = (payload.get("races") or [{}])[0]
+    runners = [_runner_value_fields(r) for r in race.get("runners", [])]
+    summary = race.get("race_summary") or summarize_race(race)
+    lines = ["### Race summary"]
+    lines.append(f"Top picks: {summary.get('top_picks') or []}")
+    lines.append(f"Value picks: {summary.get('value_picks') or []}")
+    lines.append(f"Fades: {summary.get('fades') or []}")
+    lines.append(f"Trap race: {summary.get('trap_race')}")
+    lines.append(f"Strategy: {summary.get('strategy')}")
+    lines.append("")
+    lines.append("### Runners")
+    formatter = _format_runner_mobile if format.lower() == "mobile" else _format_runner_pretty
+    ordered = sorted(runners, key=lambda r: (-r.get("lite_score", 0.0), r.get("runner_number") or 0))
+    lines.extend(formatter(r) for r in ordered)
+    typer.echo("\n".join(lines))
 
 
 if __name__ == "__main__":
