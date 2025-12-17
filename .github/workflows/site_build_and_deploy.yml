@@ -288,12 +288,3 @@ jobs:
           else
             echo "- attempted: false" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Job summary
-        if: ${{ always() }}
-        run: |
-          echo "### TURF ENGINE Site Publish" >> $GITHUB_STEP_SUMMARY
-          echo "- Run date: ${{ steps.date.outputs.run_date }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Mode: ${{ inputs.mode }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
-            <p>Mode: ${{ inputs.mode }}</p>
