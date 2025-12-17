@@ -3,9 +3,14 @@
 ## Status: IMPLEMENTED
 
 ## Scope
-- Add deterministic HTML/PDF race preview outputs without altering Lite data.
-- Include RaceSummaryPanel and compact runner rows (EV + risk + narrative) in exported previews.
-- Write outputs to `out/previews/{date}_{meeting_id}.html` and `out/previews/{date}_{meeting_id}.pdf`.
+- Add deterministic HTML/PDF race preview outputs
+- Previews are **read-only** by default - they render what's present in the payload
+- No derivation occurs unless explicitly enabled
+- Write outputs to `out/previews/{date}_{meeting_id}.html` and `.pdf`
+
+## Out of Scope
+- Derivation of race summaries or value fields (that's Plan 020)
+- Automatic inclusion of PRO fields not present in payload
 
 ## Implementation Details
 
@@ -13,38 +18,42 @@
 - Deterministic HTML/PDF renderer
 - No current time usage - uses `date_local` from payload or fixed fallback `2000-01-01`
 - Preserves runner ordering from payload (no re-sorting)
-- Works with basic `stake_card.json` - PRO fields rendered only if present
+- Only processes `stake_card*.json` files (ignores `runner_vector.json` etc.)
+- Deduplicates by `(date, meeting_id)` to prevent duplicate outputs
+- PRO fields (ev_marker, risk_profile, race_summary) rendered **only if present**
 
 ### CLI Command: `turf preview`
 ```bash
-# HTML only (default)
+# HTML only (default, read-only)
 PYTHONPATH=. python -m cli.turf_cli preview --stake-cards out/cards --out out/previews
 
 # PDF generation (requires weasyprint)
 PYTHONPATH=. python -m cli.turf_cli preview --stake-cards out/cards --out out/previews --format pdf
 
 # Single file mode
-PYTHONPATH=. python -m cli.turf_cli preview --single out/cards/stake_card.json --out out/previews --format both
+PYTHONPATH=. python -m cli.turf_cli preview --single out/cards/stake_card.json --out out/previews
 ```
 
 ### Dependencies
 - PDF generation requires optional `[pdf]` extra: `pip install turf[pdf]`
-- Uses WeasyPrint for HTML-to-PDF conversion
+- Uses WeasyPrint for HTML-to-PDF conversion (pinned in `pyproject.toml`)
 
 ## Invariants / Risks
-- **TURF_ENGINE_LITE outputs stay unchanged** - previews derive from existing data, no mutation
-- **Deterministic output** - same input => same HTML output (PDF may have metadata variations)
-- No network calls by default; all assets embedded in CSS
+- **TURF_ENGINE_LITE outputs stay unchanged** - previews read existing data only
+- **Read-only by default** - no derivation of race summaries or value fields
+- **Deterministic output** - same input => same HTML output
+- No network calls; all assets embedded in CSS
 - No live timestamps - uses date from payload only
-- Feature-flagged behavior defaults OFF to avoid impacting Lite flows
+- Only accepts `stake_card*.json` files - ignores other JSON
 
 ## Acceptance Criteria
 - [x] Running the preview command produces HTML artifacts in `out/previews/`
 - [x] PDF generation works when weasyprint is installed
-- [x] RaceSummaryPanel content included when present in stake card
-- [x] Runner rows show EV markers, risk chips when present (PRO fields)
+- [x] PRO fields rendered **only if present** in stake card (no derivation)
 - [x] Output is deterministic - multiple runs produce identical HTML
 - [x] Works with basic stake_card.json (no PRO fields required)
+- [x] Ignores non-stake-card JSON files (runner_vector.json, etc.)
+- [x] Deduplicates by (date, meeting_id)
 
 ## Verification / Commands
 ```bash

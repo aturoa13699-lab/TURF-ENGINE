@@ -138,7 +138,7 @@ def test_render_single_preview_creates_html(tmp_path: Path):
 
 
 def test_render_previews_directory(tmp_path: Path):
-    """render_previews should process all JSON files in directory."""
+    """render_previews should process only stake_card*.json files."""
     from turf.pdf_race_preview import render_previews
 
     # Create multiple stake cards
@@ -147,17 +147,22 @@ def test_render_previews_directory(tmp_path: Path):
 
     card1 = _build_minimal_stake_card()
     card1["meeting"]["meeting_id"] = "MEET_A"
-    (cards_dir / "card_a.json").write_text(json.dumps(card1))
+    (cards_dir / "stake_card.json").write_text(json.dumps(card1))
 
     card2 = _build_minimal_stake_card()
     card2["meeting"]["meeting_id"] = "MEET_B"
-    (cards_dir / "card_b.json").write_text(json.dumps(card2))
+    (cards_dir / "stake_card_pro.json").write_text(json.dumps(card2))
+
+    # This should be ignored (not a stake_card file)
+    (cards_dir / "runner_vector.json").write_text('{"runners": []}')
 
     out_dir = tmp_path / "previews"
     results = render_previews(cards_dir, out_dir, generate_pdf=False)
 
     assert len(results) == 2
     assert all(Path(r["html"]).exists() for r in results)
+    # Verify runner_vector.json was ignored
+    assert not any("runner_vector" in r["meeting_id"] for r in results)
 
 
 def test_works_without_pro_fields(tmp_path: Path):
@@ -246,16 +251,13 @@ def test_html_output_hash_stable_across_calls(tmp_path: Path):
     assert hash_a == hash_b, f"HTML hashes must match: {hash_a} != {hash_b}"
 
 
-@pytest.mark.skipif(True, reason="PDF determinism requires weasyprint and may vary by environment")
 def test_pdf_output_deterministic(tmp_path: Path):
     """PDF output should be identical for same input (requires weasyprint)."""
-    from turf.pdf_race_preview import render_single_preview, WEASYPRINT_AVAILABLE
-
-    if not WEASYPRINT_AVAILABLE:
-        pytest.skip("weasyprint not installed")
+    pytest.importorskip("weasyprint")
+    from turf.pdf_race_preview import render_single_preview
 
     card = _build_minimal_stake_card()
-    stake_path = tmp_path / "card.json"
+    stake_path = tmp_path / "stake_card.json"
     stake_path.write_text(json.dumps(card))
 
     out_a = tmp_path / "out_a"
@@ -264,12 +266,38 @@ def test_pdf_output_deterministic(tmp_path: Path):
     result_a = render_single_preview(stake_path, out_a, generate_pdf=True)
     result_b = render_single_preview(stake_path, out_b, generate_pdf=True)
 
-    if result_a.get("pdf") and result_b.get("pdf"):
-        pdf_a = Path(result_a["pdf"]).read_bytes()
-        pdf_b = Path(result_b["pdf"]).read_bytes()
+    assert result_a.get("pdf"), "PDF should be generated"
+    assert result_b.get("pdf"), "PDF should be generated"
 
-        hash_a = hashlib.sha256(pdf_a).hexdigest()
-        hash_b = hashlib.sha256(pdf_b).hexdigest()
+    pdf_a = Path(result_a["pdf"]).read_bytes()
+    pdf_b = Path(result_b["pdf"]).read_bytes()
 
-        # Note: PDF may have metadata differences; this test documents ideal behavior
-        assert hash_a == hash_b, "PDF hashes should match for determinism"
+    hash_a = hashlib.sha256(pdf_a).hexdigest()
+    hash_b = hashlib.sha256(pdf_b).hexdigest()
+
+    # Note: WeasyPrint may embed metadata; this test verifies same-environment determinism
+    assert hash_a == hash_b, f"PDF hashes must match: {hash_a} != {hash_b}"
+
+
+def test_deduplication_by_meeting_id(tmp_path: Path):
+    """Duplicate (date, meeting_id) should produce only one output."""
+    from turf.pdf_race_preview import render_previews
+
+    cards_dir = tmp_path / "cards"
+    cards_dir.mkdir()
+
+    # Two files with same meeting_id - first one should win
+    card1 = _build_minimal_stake_card()
+    card1["meeting"]["meeting_id"] = "SAME_MEET"
+    (cards_dir / "stake_card.json").write_text(json.dumps(card1))
+
+    card2 = _build_minimal_stake_card()
+    card2["meeting"]["meeting_id"] = "SAME_MEET"  # Same meeting
+    (cards_dir / "stake_card_pro.json").write_text(json.dumps(card2))
+
+    out_dir = tmp_path / "previews"
+    results = render_previews(cards_dir, out_dir, generate_pdf=False)
+
+    # Should only get one result due to deduplication
+    assert len(results) == 1
+    assert results[0]["meeting_id"] == "SAME_MEET"

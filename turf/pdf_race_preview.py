@@ -362,13 +362,19 @@ def render_previews(
         List of generated file info dicts
 
     Determinism:
+        - Only processes stake_card*.json files (ignores other JSON)
+        - Deduplicates by (date, meeting_id) to avoid duplicate outputs
         - Processes files in sorted order for consistent results
         - Uses deterministic naming based on payload content
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Only process stake_card*.json files - ignore runner_vector.json etc.
+    stake_files = sorted(stake_cards_dir.glob("stake_card*.json"))
+
+    # Deduplicate by (date, meeting_id) - first file wins
+    seen: set[tuple[str, str]] = set()
     generated = []
-    stake_files = sorted(stake_cards_dir.glob("*.json"))
 
     for stake_file in stake_files:
         try:
@@ -376,9 +382,19 @@ def render_previews(
         except (json.JSONDecodeError, IOError):
             continue
 
+        # Skip files without valid stake card structure
+        if "races" not in card:
+            continue
+
         meeting = card.get("meeting", {})
         meeting_id = meeting.get("meeting_id", stake_file.stem)
         date = meeting.get("date_local", FIXED_FALLBACK_DATE)
+
+        # Deduplicate by (date, meeting_id)
+        key = (date, meeting_id)
+        if key in seen:
+            continue
+        seen.add(key)
 
         base_name = f"{date}_{meeting_id}"
 
