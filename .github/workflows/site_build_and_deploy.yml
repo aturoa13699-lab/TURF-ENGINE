@@ -274,6 +274,10 @@ jobs:
 
       - name: Email status summary
         if: ${{ always() }}
+        env:
+          EMAIL_ATTEMPTED: ${{ inputs.send_email && steps.email_config.outputs.can_email == 'true' }}
+          EMAIL_OUTCOME: ${{ steps.send_email.outcome || 'not_run' }}
+          EMAIL_CONCLUSION: ${{ steps.send_email.conclusion || 'not_run' }}
         run: |
           echo "### Email" >> "$GITHUB_STEP_SUMMARY"
           echo "- send_email input: ${{ inputs.send_email }}" >> "$GITHUB_STEP_SUMMARY"
