@@ -65,6 +65,13 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      MAIL_TO: ${{ secrets.MAIL_TO || '' }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM || '' }}
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER || '' }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME || '' }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD || '' }}
 
     steps:
       - name: Checkout
@@ -183,6 +190,99 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+      - name: Email config check (non-blocking)
+        id: email_config
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+
+          clean() { printf '%s' "${1:-}" | tr -d '\r\n'; }
+
+          MAIL_TO_CLEAN="$(clean "${MAIL_TO:-}")"
+          MAIL_FROM_CLEAN="$(clean "${MAIL_FROM:-}")"
+          SMTP_SERVER_CLEAN="$(clean "${SMTP_SERVER:-}")"
+          SMTP_PORT_CLEAN="$(clean "${SMTP_PORT:-}")"
+          SMTP_USERNAME_CLEAN="$(clean "${SMTP_USERNAME:-}")"
+          SMTP_PASSWORD_CLEAN="$(clean "${SMTP_PASSWORD:-}")"
+
+          requested="${{ inputs.send_email }}"
+          smtp_port_set="true"
+
+          if [ -z "$SMTP_PORT_CLEAN" ]; then
+            SMTP_PORT_CLEAN="465"
+            smtp_port_set="false"
+          fi
+
+          missing=""
+          [ -n "$MAIL_TO_CLEAN" ] || missing="${missing} MAIL_TO"
+          [ -n "$MAIL_FROM_CLEAN" ] || missing="${missing} MAIL_FROM"
+          [ -n "$SMTP_SERVER_CLEAN" ] || missing="${missing} SMTP_SERVER"
+          [ -n "$SMTP_PORT_CLEAN" ] || missing="${missing} SMTP_PORT"
+          ( [ -n "$SMTP_USERNAME_CLEAN" ] && [ -n "$SMTP_PASSWORD_CLEAN" ] ) || missing="${missing} SMTP_USERNAME/SMTP_PASSWORD"
+
+          can_email="false"
+          [ -z "$missing" ] && can_email="true"
+
+          {
+            echo "requested=${requested}"
+            echo "can_email=${can_email}"
+            echo "smtp_port=${SMTP_PORT_CLEAN}"
+            echo "smtp_port_set=${smtp_port_set}"
+            echo "missing<<EOF"
+            echo "${missing# }"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Email status"
+            echo "- send_email requested: ${requested}"
+            echo "- can_email: ${can_email}"
+            echo "- smtp_port: ${SMTP_PORT_CLEAN}"
+            echo "- missing: ${missing# }"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Email step: caller must set send_email=true AND provide secrets
+      # Note: secrets.* cannot be used in if: conditions for reusable workflows
+      - name: Send email (optional)
+        id: send_email
+        if: ${{ inputs.send_email && steps.email_config.outputs.can_email == 'true' }}
+        continue-on-error: true
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: ${{ steps.email_config.outputs.smtp_port }}
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
+          subject: "TURF daily site for ${{ steps.date.outputs.run_date }}"
+          to: ${{ env.MAIL_TO }}
+          from: ${{ env.MAIL_FROM }}
+          secure: true
+          html_body: |
+            <p>The static site is live:</p>
+            <p><a href="${{ steps.deployment.outputs.page_url }}">${{ steps.deployment.outputs.page_url }}</a></p>
+            <p>Run date: ${{ steps.date.outputs.run_date }}</p>
+
+      - name: Email status summary
+        if: ${{ always() }}
+        env:
+          EMAIL_ATTEMPTED: ${{ inputs.send_email && steps.email_config.outputs.can_email == 'true' }}
+          EMAIL_OUTCOME: ${{ steps.send_email.outcome || 'not_run' }}
+          EMAIL_CONCLUSION: ${{ steps.send_email.conclusion || 'not_run' }}
+        run: |
+          echo "### Email" >> "$GITHUB_STEP_SUMMARY"
+          echo "- send_email input: ${{ inputs.send_email }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- can_email: ${{ steps.email_config.outputs.can_email }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- missing: ${{ steps.email_config.outputs.missing }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${EMAIL_ATTEMPTED}" = "true" ]; then
+            echo "- attempted: true" >> "$GITHUB_STEP_SUMMARY"
+            echo "- send_mail outcome: ${EMAIL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- send_mail conclusion: ${EMAIL_CONCLUSION}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- attempted: false" >> "$GITHUB_STEP_SUMMARY"
+            echo "- send_mail outcome: skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "- send_mail conclusion: skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Job summary
         if: ${{ always() }}
         run: |
@@ -190,23 +290,3 @@ jobs:
           echo "- Run date: ${{ steps.date.outputs.run_date }}" >> $GITHUB_STEP_SUMMARY
           echo "- Mode: ${{ inputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- Pages URL: ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
-
-      # Email step: caller must set send_email=true AND provide secrets
-      # Note: secrets.* cannot be used in if: conditions for reusable workflows
-      - name: Send email (optional)
-        if: ${{ inputs.send_email }}
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT || 465 }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "TURF daily site for ${{ steps.date.outputs.run_date }}"
-          to: ${{ secrets.MAIL_TO }}
-          from: ${{ secrets.MAIL_FROM }}
-          secure: true
-          html_body: |
-            <p>The static site is live:</p>
-            <p><a href="${{ steps.deployment.outputs.page_url }}">${{ steps.deployment.outputs.page_url }}</a></p>
-            <p>Run date: ${{ steps.date.outputs.run_date }}</p>
-            <p>Mode: ${{ inputs.mode }}</p>
