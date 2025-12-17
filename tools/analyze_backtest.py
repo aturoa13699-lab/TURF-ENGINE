@@ -1,212 +1,256 @@
-"""Analyze backtest results and generate improvement recommendations.
-
-Reads backtest metrics and generates a markdown report with:
-- Performance summary
-- Calibration analysis
-- Loss clusters identification
-- Ranked patch candidates (recommendations, not auto-changes)
-"""
 from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Tuple
+
+BUCKETS: List[Tuple[str, float, float | None]] = [
+    ("<=2.0", 0.0, 2.0),
+    ("2-5", 2.0, 5.0),
+    ("5-10", 5.0, 10.0),
+    (">10", 10.0, None),
+]
 
 
-def load_metrics(metrics_path: Path) -> Dict[str, Any]:
-    """Load backtest metrics from JSON file."""
-    if not metrics_path.exists():
-        return {}
-    return json.loads(metrics_path.read_text())
+def load_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    return json.loads(path.read_text())
 
 
-def analyze_performance(metrics: Dict[str, Any]) -> List[str]:
-    """Generate performance analysis insights."""
-    insights = []
+def load_runs(path: Path) -> List[dict]:
+    if not path.exists():
+        return []
+    rows: List[dict] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
 
-    count = metrics.get("count", 0)
-    if count == 0:
-        return ["⚠️ No data points in backtest period"]
 
-    insights.append(f"**Sample size:** {count} predictions")
+def bucket_for_price(price: Any) -> str:
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return "unknown"
+    for label, low, high in BUCKETS:
+        if high is None and p >= low:
+            return label
+        if p >= low and p < high:  # noqa: PLC1901
+            return label
+    return "unknown"
 
-    # Brier score analysis
-    brier = metrics.get("brier")
-    if brier is not None:
-        if brier < 0.2:
-            insights.append(f"✅ Brier score: {brier:.4f} (good calibration)")
-        elif brier < 0.25:
-            insights.append(f"⚠️ Brier score: {brier:.4f} (acceptable)")
-        else:
-            insights.append(f"❌ Brier score: {brier:.4f} (needs improvement)")
 
-    # Log loss analysis
-    logloss = metrics.get("logloss")
-    if logloss is not None:
-        if logloss < 0.6:
-            insights.append(f"✅ Log loss: {logloss:.4f} (good)")
-        elif logloss < 0.7:
-            insights.append(f"⚠️ Log loss: {logloss:.4f} (acceptable)")
-        else:
-            insights.append(f"❌ Log loss: {logloss:.4f} (high)")
+def summarise_buckets(runs: Iterable[dict]) -> List[dict]:
+    stats: Dict[str, Dict[str, float | int]] = {}
+    for row in runs:
+        bucket = bucket_for_price(row.get("price_now_dec"))
+        bucket_stats = stats.setdefault(
+            bucket,
+            {"count": 0, "wins": 0, "roi_sum": 0.0, "roi_count": 0, "avg_prob_sum": 0.0},
+        )
+        outcome = 1 if row.get("outcome") else 0
+        price = row.get("price_now_dec")
+        prob = row.get("win_prob")
+        bucket_stats["count"] += 1
+        bucket_stats["wins"] += outcome
+        if prob is not None:
+            bucket_stats["avg_prob_sum"] += float(prob)
+        if price is not None:
+            try:
+                p_val = float(price)
+                roi = (p_val - 1.0) if outcome else -1.0
+                bucket_stats["roi_sum"] += roi
+                bucket_stats["roi_count"] += 1
+            except (TypeError, ValueError):
+                pass
+    bucket_list: List[dict] = []
+    for bucket, values in stats.items():
+        count = int(values.get("count", 0))
+        roi_count = int(values.get("roi_count", 0))
+        roi_avg = values["roi_sum"] / roi_count if roi_count else None
+        avg_prob = values["avg_prob_sum"] / count if count else None
+        bucket_list.append(
+            {
+                "bucket": bucket,
+                "count": count,
+                "wins": int(values.get("wins", 0)),
+                "roi": roi_avg,
+                "roi_sample_size": roi_count,
+                "avg_prob": avg_prob,
+            }
+        )
+    bucket_list.sort(key=lambda x: x["bucket"])
+    return bucket_list
 
-    # ROI analysis
+
+def build_patch_candidates(metrics: dict, buckets: List[dict]) -> List[dict]:
+    candidates: List[dict] = []
     roi = metrics.get("roi")
-    roi_sample = metrics.get("roi_sample_size", 0)
-    if roi is not None and roi_sample > 0:
-        roi_pct = roi * 100
-        if roi > 0:
-            insights.append(f"✅ ROI: {roi_pct:+.2f}% on {roi_sample} bets")
-        else:
-            insights.append(f"❌ ROI: {roi_pct:+.2f}% on {roi_sample} bets")
-
-    return insights
-
-
-def generate_patch_candidates(metrics: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Generate ranked improvement recommendations based on metrics.
-
-    These are suggestions for manual review, NOT auto-applied changes.
-    """
-    candidates = []
-
-    brier = metrics.get("brier")
     logloss = metrics.get("logloss")
-    roi = metrics.get("roi")
-    count = metrics.get("count", 0)
+    sample_size = metrics.get("roi_sample_size") or 0
+    count = metrics.get("count") or 0
 
-    # Low sample size
-    if count < 50:
-        candidates.append({
-            "priority": "HIGH",
-            "category": "Data",
-            "suggestion": "Increase backtest period or data coverage",
-            "rationale": f"Only {count} samples - insufficient for statistical significance"
-        })
+    if roi is None or count == 0:
+        candidates.append(
+            {
+                "title": "Insufficient data for ROI",
+                "segment": "global",
+                "evidence": f"count={count}",
+                "suggestion": "Increase sample size or ensure backtest window has populated forecasts/results.",
+            }
+        )
+    elif roi < 0:
+        candidates.append(
+            {
+                "title": "ROI negative — calibration/overlay review",
+                "segment": "global",
+                "evidence": f"roi={roi:.3f}, sample_size={sample_size}",
+                "suggestion": "Review pricing calibration or add conservative overlay for negative expected value segments.",
+            }
+        )
+    elif roi < 0.02:
+        candidates.append(
+            {
+                "title": "ROI flat — consider risk/edge weighting",
+                "segment": "global",
+                "evidence": f"roi={roi:.3f}, sample_size={sample_size}",
+                "suggestion": "Evaluate edge-weighted or capped staking to improve risk-adjusted returns.",
+            }
+        )
 
-    # Calibration issues
-    if brier is not None and brier > 0.25:
-        candidates.append({
-            "priority": "HIGH",
-            "category": "Calibration",
-            "suggestion": "Review probability estimation methodology",
-            "rationale": f"Brier score {brier:.4f} indicates poor calibration"
-        })
-
-    # High log loss
     if logloss is not None and logloss > 0.7:
-        candidates.append({
-            "priority": "MEDIUM",
-            "category": "Model",
-            "suggestion": "Investigate extreme probability predictions",
-            "rationale": f"Log loss {logloss:.4f} suggests over-confident predictions"
-        })
+        candidates.append(
+            {
+                "title": "Calibration drift (logloss high)",
+                "segment": "global",
+                "evidence": f"logloss={logloss:.3f}",
+                "suggestion": "Check probability calibration or feature drift; consider recalibration on recent data.",
+            }
+        )
 
-    # Negative ROI
-    if roi is not None and roi < 0:
-        candidates.append({
-            "priority": "MEDIUM",
-            "category": "Staking",
-            "suggestion": "Review value edge threshold (currently 2%)",
-            "rationale": f"ROI is negative ({roi*100:.2f}%) - edge threshold may be too low"
-        })
-
-    # Positive ROI but low sample
-    roi_sample = metrics.get("roi_sample_size", 0)
-    if roi is not None and roi > 0.1 and roi_sample < 20:
-        candidates.append({
-            "priority": "LOW",
-            "category": "Validation",
-            "suggestion": "Extend backtest period to validate ROI",
-            "rationale": f"Good ROI ({roi*100:.2f}%) but only {roi_sample} bets - may be luck"
-        })
+    negative_buckets = [b for b in buckets if b.get("roi") is not None and b.get("roi", 0) < 0]
+    negative_buckets.sort(key=lambda x: (x.get("roi") or 0))
+    for bucket in negative_buckets[:3]:
+        candidates.append(
+            {
+                "title": "Bucket underperforming",
+                "segment": f"price={bucket['bucket']}",
+                "evidence": f"roi={bucket.get('roi')}, count={bucket.get('count')}",
+                "suggestion": "Review pricing/edge assumptions for this odds bucket; consider overlay or exclusion rules.",
+            }
+        )
 
     return candidates
 
 
-def generate_report(metrics: Dict[str, Any], output_path: Path) -> str:
-    """Generate markdown report from backtest metrics."""
-    lines = [
-        "# Weekly Backtest Analysis Report",
-        "",
-        f"**Generated:** {datetime.utcnow().isoformat()}Z",
-        "",
-        "---",
-        "",
-        "## Performance Summary",
-        "",
-    ]
-
-    # Performance insights
-    insights = analyze_performance(metrics)
-    for insight in insights:
-        lines.append(f"- {insight}")
-
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## Raw Metrics",
-        "",
-        "```json",
-        json.dumps(metrics, indent=2),
-        "```",
-        "",
-        "---",
-        "",
-        "## Improvement Recommendations",
-        "",
-        "*These are suggestions for manual review. Lite model ordering/math is NOT auto-changed.*",
-        "",
-    ])
-
-    # Patch candidates
-    candidates = generate_patch_candidates(metrics)
+def write_patch_candidates_md(path: Path, candidates: List[dict]) -> None:
+    lines = ["# Patch candidates", ""]
     if not candidates:
-        lines.append("✅ No critical issues identified.")
+        lines.append("No patch candidates generated (insufficient data).")
     else:
-        for i, candidate in enumerate(candidates, 1):
-            lines.extend([
-                f"### {i}. [{candidate['priority']}] {candidate['category']}",
-                "",
-                f"**Suggestion:** {candidate['suggestion']}",
-                "",
-                f"**Rationale:** {candidate['rationale']}",
-                "",
-            ])
+        for idx, cand in enumerate(candidates, start=1):
+            lines.append(f"{idx}. **{cand['title']}** — {cand['suggestion']} ({cand['evidence']})")
+    path.write_text("\n".join(lines))
 
-    lines.extend([
-        "---",
-        "",
-        "## Next Steps",
-        "",
-        "- [ ] Review recommendations above",
-        "- [ ] Check data completeness for the backtest period",
-        "- [ ] Compare with previous week's metrics",
-        "- [ ] Document any changes made based on this report",
-        "",
-    ])
 
-    report = "\n".join(lines)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report)
+def write_experiments_yaml(path: Path, candidates: List[dict]) -> None:
+    lines = ["experiments:"]
+    for idx, cand in enumerate(candidates, start=1):
+        lines.append(f"  - id: exp_{idx:02d}")
+        lines.append(f"    title: \"{cand['title']}\"")
+        lines.append(f"    segment: \"{cand['segment']}\"")
+        lines.append(f"    evidence: \"{cand['evidence']}\"")
+        lines.append(f"    suggestion: \"{cand['suggestion']}\"")
+    if len(lines) == 1:
+        lines.append("  - id: exp_01")
+        lines.append("    title: \"No experiments generated\"")
+        lines.append("    suggestion: \"Add backtest data to produce patch candidates.\"")
+    path.write_text("\n".join(lines))
 
-    return report
+
+def write_loss_clusters(path: Path, buckets: List[dict]) -> None:
+    loss_clusters = [b for b in buckets if b.get("roi") is not None and b.get("roi") < 0]
+    loss_clusters.sort(key=lambda x: (x.get("roi") or 0))
+    path.write_text(json.dumps(loss_clusters, indent=2))
+
+
+def write_report_md(path: Path, metrics: dict, buckets: List[dict], candidates: List[dict]) -> None:
+    lines = ["# Weekly Backtest Report", ""]
+    lines.append(f"Generated at (UTC): {datetime.now(timezone.utc).isoformat()}")
+    lines.append("")
+    for field in ("start_date", "end_date", "model", "git_sha"):
+        if metrics.get(field) is not None:
+            lines.append(f"- {field.replace('_', ' ').title()}: {metrics[field]}")
+    lines.append("")
+
+    lines.append("## Metrics")
+    if metrics:
+        for key in ("count", "brier", "logloss", "roi", "roi_sample_size", "avg_edge"):
+            if key in metrics:
+                lines.append(f"- {key}: {metrics.get(key)}")
+    else:
+        lines.append("- (no metrics available)")
+    lines.append("")
+
+    lines.append("## Buckets")
+    if buckets:
+        for b in buckets:
+            lines.append(
+                f"- {b['bucket']}: count={b['count']}, roi={b['roi']}, roi_sample_size={b['roi_sample_size']}, avg_prob={b['avg_prob']}"
+            )
+    else:
+        lines.append("- No bucket data available")
+    lines.append("")
+
+    lines.append("## Patch candidates")
+    if candidates:
+        for idx, cand in enumerate(candidates, start=1):
+            lines.append(f"{idx}. **{cand['title']}** — {cand['suggestion']} ({cand['evidence']})")
+    else:
+        lines.append("- None (insufficient data)")
+    lines.append("")
+
+    path.write_text("\n".join(lines))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Analyze backtest results and generate report")
-    parser.add_argument("--metrics", type=Path, required=True, help="Path to backtest_metrics.json")
-    parser.add_argument("--out", type=Path, default=Path("out/reports/backtest_report.md"), help="Output report path")
+    parser = argparse.ArgumentParser(description="Analyze backtest outputs and generate reports")
+    parser.add_argument("--metrics", type=Path, default=Path("out/backtest/metrics.json"))
+    parser.add_argument("--runs", type=Path, default=Path("out/backtest/runs.jsonl"))
+    parser.add_argument("--out", type=Path, default=Path("out/backtest"))
     args = parser.parse_args()
 
-    metrics = load_metrics(args.metrics)
-    report = generate_report(metrics, args.out)
-    print(f"Report written to {args.out}")
-    print("\n--- Report Preview ---\n")
-    print(report[:1000] + "..." if len(report) > 1000 else report)
+    metrics = load_json(args.metrics, default={})
+    runs = load_runs(args.runs)
+    buckets = summarise_buckets(runs) if runs else []
+    candidates = build_patch_candidates(metrics, buckets)
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "report.md").write_text("")
+
+    metrics_summary = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "source_metrics": args.metrics.name,
+        "source_runs": args.runs.name,
+        "metrics": metrics,
+        "buckets": buckets,
+        "patch_candidates": [c.get("title") for c in candidates],
+    }
+
+    (args.out / "metrics_summary.json").write_text(json.dumps(metrics_summary, indent=2))
+    write_patch_candidates_md(args.out / "patch_candidates.md", candidates)
+    write_experiments_yaml(args.out / "experiments.yml", candidates)
+    write_loss_clusters(args.out / "loss_clusters.json", buckets)
+    write_report_md(args.out / "report.md", metrics, buckets, candidates)
 
 
 if __name__ == "__main__":
