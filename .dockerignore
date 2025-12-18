@@ -1,0 +1,6 @@
+out/
+public/
+data/*.duckdb
+__pycache__/
+*.pyc
+*.egg-info/

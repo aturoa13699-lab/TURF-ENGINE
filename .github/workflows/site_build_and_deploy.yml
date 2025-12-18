@@ -37,6 +37,11 @@ on:
         required: false
         type: boolean
         default: false
+      publish_derived_only:
+        description: "If true, skip site/build_site.py and only publish derived digest pages under public/derived."
+        required: false
+        type: boolean
+        default: false
     secrets:
       SMTP_SERVER:
         required: false
@@ -168,6 +173,7 @@ jobs:
             --write-per-meeting
 
       - name: Build site into public/
+        if: ${{ !inputs.publish_derived_only }}
         run: |
           set -euxo pipefail
           rm -rf public
@@ -177,6 +183,28 @@ jobs:
           fi
 
           python site/build_site.py --stake-cards "${{ inputs.stake_cards_path }}" --out public $RENDER_FLAGS
+
+      - name: Prepare derived-only public skeleton
+        if: ${{ inputs.publish_derived_only }}
+        run: |
+          set -euxo pipefail
+          rm -rf public
+          mkdir -p public/derived
+          cat > public/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>TURF derived digests</title>
+          </head>
+          <body>
+            <main>
+              <h1>TURF derived digests</h1>
+              <p>Digest artifacts are available under <a href="derived/index.html">/derived/index.html</a>.</p>
+            </main>
+          </body>
+          </html>
+          EOF
 
       - name: Stage digest artifacts into public/derived
         run: |
@@ -190,6 +218,12 @@ jobs:
         run: |
           set -euxo pipefail
           python -m turf.digest_pages --derived-dir out/derived --public-derived-dir public/derived
+
+      - name: Ensure Pages metadata files
+        run: |
+          set -euo pipefail
+          mkdir -p public
+          touch public/.nojekyll
 
       - name: Smoke check (Lite-only render has no derived extras)
         if: ${{ !inputs.render_derive_extras }}

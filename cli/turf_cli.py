@@ -17,6 +17,7 @@ from engine.turf_engine_pro import (
     overlay_from_stake_card,
     pro_overlay_logit_win_place_v0,
 )
+from turf.backfill_digests import BackfillConfig, backfill_digests as run_backfill_digests
 from turf.feature_flags import resolve_feature_flags
 from turf.race_summary import summarize_race
 from turf.value import derive_runner_value_fields
@@ -361,6 +362,48 @@ def digest(
 
     write_strategy_digest(out_dir=str(out), digest=digest_payload, filename_base="strategy_digest")
     typer.echo(f"Wrote {out / 'strategy_digest.json'} and {out / 'strategy_digest.md'} (bets={len(bets)})")
+
+
+@app.command("backfill-digests")
+def backfill_digests(
+    from_date: Optional[str] = typer.Option(None, "--from-date", help="Start date YYYY-MM-DD (optional)"),
+    to_date: Optional[str] = typer.Option(None, "--to-date", help="End date YYYY-MM-DD (optional)"),
+    days: int = typer.Option(90, "--days", help="Number of days to backfill if dates are partially/unspecified"),
+    out: pathlib.Path = typer.Option(Path("out/backfills"), "--out", help="Base output directory for backfill artifacts"),
+    stake_cards_dir: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--stake-cards-dir",
+        help="Optional stake cards root; uses subdir named YYYY-MM-DD when present, otherwise falls back to demo fixtures",
+    ),
+    prefer_pro: bool = typer.Option(True, "--prefer-pro/--no-prefer-pro", help="Prefer stake_card_pro when both exist"),
+    simulate: bool = typer.Option(False, "--simulate/--no-simulate", help="Run bankroll simulation during digest"),
+    seed: int = typer.Option(1337, "--seed", help="RNG seed (required when --simulate)"),
+    write_per_meeting: bool = typer.Option(
+        True, "--write-per-meeting/--no-write-per-meeting", help="Write per-meeting digests for each day"
+    ),
+    render_html: bool = typer.Option(
+        True, "--render-html/--no-render-html", help="Render digest HTML wrappers under public/derived per day"
+    ),
+):
+    """Deterministically backfill daily digests over a date range (derived-only)."""
+
+    cfg = BackfillConfig(
+        from_date=from_date,
+        to_date=to_date,
+        days=days,
+        out_dir=out,
+        stake_cards_dir=stake_cards_dir,
+        prefer_pro=prefer_pro,
+        simulate=simulate,
+        seed=seed,
+        write_per_meeting=write_per_meeting,
+        render_html=render_html,
+    )
+    index_payload = run_backfill_digests(cfg)
+    dates = [d.get("date") for d in index_payload.get("dates", [])]
+    typer.echo(f"Backfill complete ({len(dates)} day(s)) -> {out / 'index.json'}")
+    if dates:
+        typer.echo(f"Dates: {', '.join(dates)}")
 
 
 @view_app.command("stake-card")
