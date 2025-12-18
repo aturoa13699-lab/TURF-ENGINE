@@ -109,10 +109,12 @@ jobs:
       - name: Guardrail - ensure daily-digest command exists
         run: |
           set -euo pipefail
-          if ! python -m cli.turf_cli --help | grep -q "daily-digest"; then
+          HELP_OUTPUT=$(python -m cli.turf_cli --help 2>&1 | sed -r 's/\x1B\[[0-9;]*[mK]//g')
+
+          if ! printf "%s\n" "$HELP_OUTPUT" | grep -q "daily-digest"; then
             echo "::error::Expected Typer command 'daily-digest' not found. This workflow depends on it."
             echo "CLI help output:"
-            python -m cli.turf_cli --help || true
+            printf "%s\n" "$HELP_OUTPUT"
             exit 1
           fi
 
