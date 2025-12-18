@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
 from turf.feature_flags import resolve_feature_flags
+from turf.runner_insights import derive_runner_insights, derive_trap_race
 from turf.race_summary import summarize_race
 from turf.value import derive_runner_value_fields
 
@@ -331,6 +332,11 @@ def apply_pro_overlay_to_stake_card(
 ) -> dict:
     output = json.loads(json.dumps(stake_card))  # deep copy
     flags = resolve_feature_flags(feature_flags)
+    enable_summary = bool(flags.get("enable_runner_narratives"))
+    enable_fitness = bool(flags.get("enable_runner_fitness"))
+    enable_risk = bool(flags.get("enable_runner_risk"))
+    enable_trap = bool(flags.get("enable_trap_race"))
+    any_insights = enable_summary or enable_fitness or enable_risk
     races = output.get("races", [])
     for race in races:
         for runner in race.get("runners", []):
@@ -340,8 +346,19 @@ def apply_pro_overlay_to_stake_card(
                 if flags.get("ev_bands"):
                     derived = derive_runner_value_fields(runner)
                     runner.update(derived)
+            if any_insights:
+                insights = derive_runner_insights(
+                    runner,
+                    enable_summary=enable_summary,
+                    enable_fitness=enable_fitness,
+                    enable_risk=enable_risk,
+                )
+                if insights:
+                    runner.update(insights)
         if flags.get("race_summary"):
             race["race_summary"] = summarize_race(race)
+        if enable_trap and derive_trap_race(race, output.get("engine_context", {})):
+            race["trap_race"] = True
     ctx = output.setdefault("engine_context", {})
     debug = ctx.setdefault("debug", {})
     debug["overlay_writer"] = overlay_writer
