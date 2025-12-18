@@ -26,7 +26,6 @@ from turf.parse_odds import parse_generic_odds_table, parsed_odds_to_market
 from turf.parse_ra import parsed_race_to_market_snapshot, parsed_race_to_speed_sidecar, parse_meeting_html
 from turf.digest import build_strategy_digest, write_strategy_digest
 from turf.simulation import Bet, select_bets_from_stake_card, simulate_bankroll
-from turf.daily_digest import build_daily_digest
 
 app = typer.Typer(help="End-to-end TURF demo runner with overlays and site hooks")
 view_app = typer.Typer(help="Read-only stake-card viewers")
@@ -363,6 +362,69 @@ def digest(
 
     write_strategy_digest(out_dir=str(out), digest=digest_payload, filename_base="strategy_digest")
     typer.echo(f"Wrote {out / 'strategy_digest.json'} and {out / 'strategy_digest.md'} (bets={len(bets)})")
+
+
+@app.command("daily-digest")
+def daily_digest(
+    stake_cards: pathlib.Path = typer.Option(
+        Path("out/cards"), "--stake-cards", exists=True, help="Directory containing stake card JSON files"
+    ),
+    out: pathlib.Path = typer.Option(Path("out/derived"), "--out", help="Output directory for digest artifacts"),
+    prefer_pro: bool = typer.Option(True, "--prefer-pro/--no-prefer-pro", help="Prefer stake_card_pro when available"),
+    write_per_meeting: bool = typer.Option(
+        False, "--write-per-meeting/--no-write-per-meeting", help="Write per-meeting digests alongside the daily index"
+    ),
+    require_positive_ev: bool = typer.Option(
+        True, "--require-positive-ev/--no-require-positive-ev", help="Require forecast.ev_1u > 0.0 when selecting bets"
+    ),
+    min_ev: Optional[float] = typer.Option(None, "--min-ev", help="Minimum forecast.ev_1u (optional)"),
+    min_edge: Optional[float] = typer.Option(None, "--min-edge", help="Minimum forecast.value_edge (optional)"),
+    policy: str = typer.Option("flat", "--policy", help="Stake policy: flat | kelly | fractional_kelly"),
+    bankroll_start: float = typer.Option(1000.0, "--bankroll-start", help="Starting bankroll for stake sizing"),
+    flat_stake: float = typer.Option(20.0, "--flat-stake", help="Flat stake size (policy=flat)"),
+    kelly_fraction: float = typer.Option(0.25, "--kelly-fraction", help="Kelly fraction (policy=fractional_kelly)"),
+    max_stake_frac: float = typer.Option(0.02, "--max-stake-frac", help="Max stake fraction of bankroll per bet"),
+    simulate: bool = typer.Option(
+        False, "--simulate/--no-simulate", help="Run deterministic bankroll simulation during digest"
+    ),
+    iters: int = typer.Option(10_000, "--iters", help="Simulation iterations (if --simulate)"),
+    seed: int = typer.Option(1337, "--seed", help="RNG seed (if --simulate)"),
+):
+    """Aggregate stake cards into a deterministic daily digest (derived-only)."""
+
+    from turf.daily_digest import build_daily_digest
+
+    daily = build_daily_digest(
+        stake_cards_dir=stake_cards,
+        out_dir=out,
+        prefer_pro=prefer_pro,
+        write_per_meeting=write_per_meeting,
+        require_positive_ev=require_positive_ev,
+        min_ev=min_ev,
+        min_edge=min_edge,
+        policy=policy,
+        bankroll_start=bankroll_start,
+        flat_stake=flat_stake,
+        kelly_fraction=kelly_fraction,
+        max_stake_frac=max_stake_frac,
+        simulate=simulate,
+        iters=iters,
+        seed=seed,
+    )
+
+    typer.echo(f"Wrote {out / 'daily_digest.json'} and {out / 'daily_digest.md'}")
+    if write_per_meeting:
+        meetings = daily.get("meetings", []) or []
+        for meeting in meetings:
+            json_rel = meeting.get("digest_json_path")
+            md_rel = meeting.get("digest_md_path")
+            if not json_rel and not md_rel:
+                continue
+            meeting_id = meeting.get("meeting_id") or "unknown_meeting"
+            if json_rel:
+                typer.echo(f"{meeting_id}: {out / json_rel}")
+            if md_rel:
+                typer.echo(f"{meeting_id}: {out / md_rel}")
 
 
 @app.command("backfill-digests")
