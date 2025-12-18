@@ -1,0 +1,5 @@
+- Scope: add daily-digest CLI command wrapping turf.daily_digest.build_daily_digest with workflow-parity flags.
+- Out of scope: changing digest generation logic, workflows, or Lite math.
+- Invariants: keep Lite determinism and outputs unchanged; Derived/PRO outputs remain in pro/derived paths.
+- Acceptance: new CLI option mirrors workflow flags and echoes written outputs; imports remain lazy for startup speed.
+- Verification: run pytest -q and cli demo-run command; validate workflow guardrails and YAML parse per repo rules.
