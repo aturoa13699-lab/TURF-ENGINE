@@ -10,6 +10,7 @@ single daily digest artifacts. It must:
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -88,6 +89,11 @@ def render_daily_digest_markdown(daily: Dict[str, Any]) -> str:
         if source_path:
             lines.append(f"- source: {source_path}")
         lines.append(f"- bets: {bets_count}")
+        # Plan 072: surfaced only when present (flagged).
+        if m.get("digest_md_path"):
+            lines.append(f"- meeting_digest_md: {m.get('digest_md_path')}")
+        if m.get("digest_json_path"):
+            lines.append(f"- meeting_digest_json: {m.get('digest_json_path')}")
         lines.append("")
 
         # Optional: include a compact bet list if present in the embedded digest.
@@ -109,11 +115,49 @@ def render_daily_digest_markdown(daily: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _slugify(value: str) -> str:
+    """Deterministic slug for meeting folder names."""
+    s = (value or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = s.strip("_")
+    return s or "unknown"
+
+
+def _render_meeting_digest_markdown(digest_payload: Dict[str, Any]) -> str:
+    """Deterministic, timestamp-free Markdown for a per-meeting digest."""
+    meeting = digest_payload.get("meeting", {}) or {}
+    meeting_id = meeting.get("meeting_id") or "unknown_meeting"
+    date_local = meeting.get("date_local") or "0000-00-00"
+    bets = digest_payload.get("bets") or []
+
+    lines: List[str] = []
+    lines.append(f"# Strategy Digest: {meeting_id} ({date_local})")
+    lines.append("")
+    lines.append(f"- bets: {len(bets)}")
+    lines.append("")
+    if bets:
+        lines.append("## Bets")
+        for b in bets:
+            if isinstance(b, dict):
+                race_no = b.get("race_number")
+                rn = b.get("runner_number")
+                bt = b.get("bet_type") or b.get("type") or "BET"
+                stake = b.get("stake")
+                price = b.get("odds_dec") or b.get("price")
+                reason = b.get("reason") or ""
+                lines.append(f"- R{race_no} #{rn} {bt} stake={stake} price={price} {reason}".rstrip())
+            else:
+                lines.append(f"- {b}")
+    lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def build_daily_digest(
     *,
     stake_cards_dir: Path,
     out_dir: Path,
     prefer_pro: bool = True,
+    write_per_meeting: bool = False,
     require_positive_ev: bool = True,
     min_ev: float | None = None,
     min_edge: float | None = None,
@@ -174,15 +218,29 @@ def build_daily_digest(
             simulation_summary=sim_summary,
         )
 
-        meetings_out.append(
-            {
-                "meeting_id": meeting_id,
-                "date_local": date_local,
-                "source_path": str(p),
-                "bets_count": len(bets),
-                "strategy_digest": digest_payload,
-            }
-        )
+        meeting_record: Dict[str, Any] = {
+            "meeting_id": meeting_id,
+            "date_local": date_local,
+            "source_path": str(p),
+            "bets_count": len(bets),
+            "strategy_digest": digest_payload,
+        }
+
+        # Plan 072: optional per-meeting digest artifacts (default OFF).
+        if write_per_meeting:
+            slug = _slugify(meeting_id)
+            folder = f"{date_local}_{slug}"
+            meeting_out_dir = out_dir / "meetings" / folder
+            meeting_out_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(meeting_out_dir / "strategy_digest.json", digest_payload)
+            (meeting_out_dir / "strategy_digest.md").write_text(_render_meeting_digest_markdown(digest_payload))
+
+            # Relative paths only (portable across environments)
+            meeting_record["digest_json_path"] = str(Path("meetings") / folder / "strategy_digest.json")
+            meeting_record["digest_md_path"] = str(Path("meetings") / folder / "strategy_digest.md")
+
+        meetings_out.append(meeting_record)
 
     meetings_out = sorted(meetings_out, key=lambda m: (m.get("date_local") or "0000-00-00", m.get("meeting_id") or "", m.get("source_path") or ""))
 
@@ -190,6 +248,7 @@ def build_daily_digest(
         "config": {
             "stake_cards_dir": str(stake_cards_dir),
             "prefer_pro": prefer_pro,
+            "write_per_meeting": write_per_meeting,
             "require_positive_ev": require_positive_ev,
             "min_ev": min_ev,
             "min_edge": min_edge,
@@ -213,4 +272,3 @@ def build_daily_digest(
     write_json(out_dir / "daily_digest.json", daily)
     (out_dir / "daily_digest.md").write_text(render_daily_digest_markdown(daily))
     return daily
-
