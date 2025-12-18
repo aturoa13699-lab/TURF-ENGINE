@@ -1,7 +1,5 @@
 # Plan 065: Pages workflow reliability fixes (publish.json + email step id)
 
-Why: publish.json was created before deployment so page_url was empty, and the optional email step lacked an id causing summary references to break.
-
 ## Scope
 - Fix `.github/workflows/site_build_and_deploy.yml` so `publish.json` captures the deployed Pages URL.
 - Add missing `id` to the optional email step so downstream references to `steps.send_email.*` resolve.
@@ -39,3 +37,4 @@ Run:
 Manual workflow sanity:
 - Run `Publish site & email URL` with `send_email=false` → deploy succeeds and artifact contains `page_url`.
 - Run with `send_email=true` but no SMTP secrets configured → deploy succeeds; email is skipped; summary reports missing config.
+
