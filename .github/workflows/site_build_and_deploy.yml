@@ -157,6 +157,16 @@ jobs:
             cp out/demo_run/stake_card_pro.json "${{ inputs.stake_cards_path }}/"
           fi
 
+      - name: Build daily digest (derived-only)
+        run: |
+          set -euxo pipefail
+          rm -rf out/derived
+          python -m cli.turf_cli daily-digest \
+            --stake-cards "${{ inputs.stake_cards_path }}" \
+            --out out/derived \
+            --simulate \
+            --write-per-meeting
+
       - name: Build site into public/
         run: |
           set -euxo pipefail
@@ -168,13 +178,28 @@ jobs:
 
           python site/build_site.py --stake-cards "${{ inputs.stake_cards_path }}" --out public $RENDER_FLAGS
 
+      - name: Stage digest artifacts into public/derived
+        run: |
+          set -euxo pipefail
+          mkdir -p public/derived
+          if [ -d out/derived ]; then
+            cp -R out/derived/* public/derived/
+          fi
+
+      - name: Render digest HTML pages (derived-only)
+        run: |
+          set -euxo pipefail
+          python -m turf.digest_pages --derived-dir out/derived --public-derived-dir public/derived
+
       - name: Smoke check (Lite-only render has no derived extras)
         if: ${{ !inputs.render_derive_extras }}
         run: |
           set -euo pipefail
           test -f public/index.html
 
-          if grep -RIn --line-number -E 'Top Picks|Value Picks|Trap Race|ev_band|ev_marker|risk_tags|risk_profile' public; then
+          # Digest artifacts under public/derived are derived-only by design.
+          if grep -RIn --line-number -E 'Top Picks|Value Picks|Trap Race|ev_band|ev_marker|risk_tags|risk_profile' public \
+            --exclude-dir=derived; then
             echo "::error::Derived extras detected in Lite-only render. Expected read-only rendering."
             exit 1
           fi
@@ -201,7 +226,9 @@ jobs:
           {
             "run_date": "${{ steps.date.outputs.run_date }}",
             "mode": "${{ inputs.mode }}",
-            "page_url": "${{ steps.deployment.outputs.page_url || '' }}"
+            "page_url": "${{ steps.deployment.outputs.page_url || '' }}",
+            "daily_digest_md": "derived/daily_digest.md",
+            "daily_digest_json": "derived/daily_digest.json"
           }
           EOF
 
@@ -294,6 +321,12 @@ jobs:
             <p>The static site is live:</p>
             <p><a href="${{ steps.deployment.outputs.page_url }}">${{ steps.deployment.outputs.page_url }}</a></p>
             <p>Run date: ${{ steps.date.outputs.run_date }}</p>
+            <p>Daily digest:</p>
+            <ul>
+              <li><a href="${{ steps.deployment.outputs.page_url }}derived/index.html">Digest index</a></li>
+              <li><a href="${{ steps.deployment.outputs.page_url }}derived/daily_digest.html">Daily digest (HTML)</a></li>
+              <li><a href="${{ steps.deployment.outputs.page_url }}derived/daily_digest.json">Daily digest (JSON)</a></li>
+            </ul>
 
       - name: Email status summary
         if: ${{ always() }}
