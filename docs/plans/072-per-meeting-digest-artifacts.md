@@ -1,44 +1,35 @@
-# Plan 072: Per-meeting digest artifacts (opt-in) + daily index links
-
-## Goal
-Extend the Plan 071 daily digest aggregator to optionally emit **per-meeting**
-digest artifacts alongside the combined daily index, so Pages can link directly
-to each meeting’s strategy sheet while keeping the daily index as the entry point.
+# Plan 072: Per-meeting digest artifacts (opt-in)
 
 ## Scope
-- Add `--write-per-meeting` (default **OFF**) to `daily-digest`.
-- When enabled:
-  - Write per-meeting artifacts under: `out/derived/meetings/<meeting_id>/`
-    - `strategy_digest.json`
-    - `strategy_digest.md`
-  - Add stable per-meeting artifact paths into `daily_digest.json`.
-  - Add stable links/paths into `daily_digest.md`.
+- Extend the daily digest aggregator to optionally emit **per-meeting** digest artifacts (JSON + Markdown) alongside the combined daily index.
+- Add a `write_per_meeting` flag to `build_daily_digest` and propagate through without changing default behavior.
+- Per-meeting artifacts live under `out_dir/meetings/<date_local>_<slug>/` (flag-controlled).
 
 ## Out of scope
-- Any Lite scoring/math/order changes.
-- Any new betting logic or selection policy changes.
-- Site rendering changes (Pages will simply publish artifacts; linking can be a later plan).
+- Any Lite math/ordering changes.
+- Any changes to stake-card generation, overlay logic, or site renderer behavior.
 
-## Determinism / Safety invariants
-- Inputs must not be mutated.
-- Output ordering must be stable across platforms.
-- Default behavior unchanged when `--write-per-meeting` is OFF.
-- No timestamps in Markdown outputs.
-- Paths written in the daily index should be **relative to out_dir** and deterministic.
+## Invariants
+- Determinism: stable ordering, no timestamps in outputs, deterministic slugs.
+- Default OFF: behavior identical to Plan 071 when `write_per_meeting=False`.
+- Non-mutation: input stake-card JSON files are never modified.
+- Per-meeting paths: `digest_json_path` / `digest_md_path` appear in meeting records **only** when `write_per_meeting=True`.
+
+## Implementation
+- Add deterministic helpers:
+  - `_slugify(meeting_id)` for stable folder naming.
+  - `_render_meeting_digest_markdown()` for per-meeting markdown output.
+- Emit artifacts under:
+  - `out_dir/meetings/<date_local>_<slug>/strategy_digest.json`
+  - `out_dir/meetings/<date_local>_<slug>/strategy_digest.md`
+- Update `render_daily_digest_markdown` to surface per-meeting paths when present (without changing ordering).
 
 ## Acceptance criteria
-- With `--write-per-meeting` OFF:
-  - No `out/derived/meetings/` tree is created (or it remains empty).
-  - Daily digest output structure remains compatible with Plan 071.
-- With `--write-per-meeting` ON:
-  - Each included meeting has per-meeting digest files written.
-  - `daily_digest.json` includes `digest_json_path` and `digest_md_path` for each meeting.
-  - `daily_digest.md` contains the per-meeting relative paths.
-- Determinism:
-  - Running twice on identical inputs produces identical JSON/Markdown and identical per-meeting digest bytes.
+- `build_daily_digest(..., write_per_meeting=True)` writes per-meeting artifacts and includes relative paths in meeting records.
+- `write_per_meeting=False` creates no `out_dir/meetings/` directory and does not include per-meeting paths.
+- Outputs are deterministic across repeated runs.
 
-## Required verification
-1. `bash scripts/guardian_check.sh`
-2. `PYTHONPATH=. python -m pytest -q`
-3. `bash scripts/audit_all.sh`
-
+## Required checks
+- `bash scripts/guardian_check.sh`
+- `PYTHONPATH=. python -m pytest -q`
+- `bash scripts/audit_all.sh`
