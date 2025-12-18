@@ -18,7 +18,6 @@
 - Add a dedicated workflow (`.github/workflows/backfill_publish.yml`) for manual dispatch to run `backfill-digests` (default 90 days, seed 1337) with HTML + per-meeting digests enabled and publish under `public/backfills`.
 - Workflow must keep guardrails (module-mode CLI, no `secrets.*` in `if:`) and produce deterministic landing pages: `public/index.html` linking to `/backfills/index.html`, `public/backfills/index.{json,md}` copied from backfill output, plus a minimal `public/backfills/index.html` wrapper (timestamp-free).
 - Pages artifact must include `.nojekyll` and only derived outputs; Lite math/ordering untouched.
-- Add a safety guard step to `site_build_and_deploy.yml` to fail fast if the `daily-digest` Typer command is missing (no other workflow changes).
 
 ## Verification
 - `bash scripts/verify_repo_identity.sh`
