@@ -69,6 +69,13 @@ For static site deploys and emailed Pages URLs, see `README_SITE.md` plus `.gith
 
 For backfill + DuckDB logging + backtests, see `tools/` and `.github/workflows/turf_backfill_and_backtest.yml`, which append forecasts to `data/turf.duckdb` and emit simple Brier/logloss/ROI metrics as artifacts.
 
+## Simulation / Bankroll (Plan 050)
+
+- `python -m cli.turf_cli bankroll --stake-cards out/cards --out out/derived/sim --seed 123 --iters 1000`
+- Deterministic, seeded Monte Carlo using PRO/derived stake cards (prefers `stake_card_pro.json` when present).
+- Outputs land under `out/derived/sim/**` (e.g., `bankroll_summary.json`, `bets_selected.json`, `strategy_inputs.json`).
+- Lite outputs remain unchanged; selection defaults only place bets when forecast EV is present and positive.
+
 ## Notes
 
 - The registry builder is left as a stub in `turf/registry_builder.py` for future work (RA/R&S ingestion).

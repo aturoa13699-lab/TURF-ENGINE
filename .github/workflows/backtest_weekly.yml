@@ -6,10 +6,23 @@ on:
     - cron: "0 19 * * 0"
   workflow_dispatch:
     inputs:
+      start_date:
+        description: "Override start date (YYYY-MM-DD)"
+        required: false
+        type: string
+      end_date:
+        description: "Override end date (YYYY-MM-DD)"
+        required: false
+        type: string
       days_back:
-        description: "Number of days to backtest (default: 7)"
+        description: "Number of days to backtest if start/end not provided"
         required: false
         default: "7"
+        type: string
+      model:
+        description: "Model/profile to backtest"
+        required: false
+        default: "lite"
         type: string
       send_email:
         description: "Send email report"
@@ -29,6 +42,13 @@ jobs:
     name: Weekly Backtest
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MAIL_TO: ${{ secrets.MAIL_TO || '' }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM || '' }}
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER || '' }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT || '' }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME || '' }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD || '' }}
 
     steps:
       - name: Checkout
@@ -42,6 +62,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e .
@@ -50,86 +71,157 @@ jobs:
         id: dates
         run: |
           set -euo pipefail
+          START_INPUT="${{ github.event.inputs.start_date || '' }}"
+          END_INPUT="${{ github.event.inputs.end_date || '' }}"
           DAYS_BACK="${{ github.event.inputs.days_back || '7' }}"
-          END_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
-          START_DATE="$(TZ=Australia/Sydney date -d "${DAYS_BACK} days ago" +%Y-%m-%d)"
+          MODEL_INPUT="${{ github.event.inputs.model || 'lite' }}"
+          SEND_EMAIL_INPUT="${{ github.event.inputs.send_email || 'true' }}"
+
+          if [ -n "$START_INPUT" ]; then
+            START_DATE="$START_INPUT"
+          else
+            START_DATE="$(TZ=Australia/Sydney date -d "${DAYS_BACK} days ago" +%Y-%m-%d)"
+          fi
+
+          if [ -n "$END_INPUT" ]; then
+            END_DATE="$END_INPUT"
+          else
+            END_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
+          fi
+
           echo "start_date=${START_DATE}" >> "$GITHUB_OUTPUT"
           echo "end_date=${END_DATE}" >> "$GITHUB_OUTPUT"
-          echo "Backtest range: ${START_DATE} to ${END_DATE}"
+          echo "model=${MODEL_INPUT}" >> "$GITHUB_OUTPUT"
+          echo "send_email=${SEND_EMAIL_INPUT}" >> "$GITHUB_OUTPUT"
 
       - name: Run backtest
         run: |
-          set -euxo pipefail
-          mkdir -p out/backtest out/reports
-
+          set -euo pipefail
+          mkdir -p out/backtest
           python -m tools.backtest \
             --start "${{ steps.dates.outputs.start_date }}" \
             --end "${{ steps.dates.outputs.end_date }}" \
-            --model "lite" \
+            --model "${{ steps.dates.outputs.model }}" \
             --out out/backtest
 
       - name: Run analysis
         run: |
-          set -euxo pipefail
-          if [ -f tools/analyze_backtest.py ]; then
-            python -m tools.analyze_backtest \
-              --metrics out/backtest/backtest_metrics.json \
-              --out out/reports/backtest_report.md
-          else
-            echo "# Weekly Backtest Report" > out/reports/backtest_report.md
-            echo "" >> out/reports/backtest_report.md
-            echo "**Period:** ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}" >> out/reports/backtest_report.md
-            echo "" >> out/reports/backtest_report.md
-            echo "## Metrics" >> out/reports/backtest_report.md
-            echo '```json' >> out/reports/backtest_report.md
-            cat out/backtest/backtest_metrics.json >> out/reports/backtest_report.md
-            echo '```' >> out/reports/backtest_report.md
-          fi
+          set -euo pipefail
+          python -m tools.analyze_backtest \
+            --metrics out/backtest/metrics.json \
+            --runs out/backtest/runs.jsonl \
+            --out out/backtest
 
       - name: Job summary
-        if: always()
+        if: ${{ always() }}
         run: |
-          echo "### Weekly Backtest Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Period:** ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f out/backtest/backtest_metrics.json ]; then
-            echo "#### Metrics" >> $GITHUB_STEP_SUMMARY
-            echo '```json' >> $GITHUB_STEP_SUMMARY
-            cat out/backtest/backtest_metrics.json >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          SUMMARY_JSON="out/backtest/metrics_summary.json"
+          CANDIDATES="- (none)"
+          if [ -f "$SUMMARY_JSON" ]; then
+            TOP=$(python - <<'PY'
+              import json
+              from pathlib import Path
+
+              summary = Path("out/backtest/metrics_summary.json")
+              titles = []
+              if summary.exists():
+                  data = json.loads(summary.read_text())
+                  titles = [t for t in (data.get("patch_candidates") or []) if t]
+              print("\n".join(titles[:3]))
+            PY
+            )
+            if [ -n "$TOP" ]; then
+              CANDIDATES="$TOP"
+            fi
           fi
 
+          echo "### Weekly Backtest" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Period: ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Model: ${{ steps.dates.outputs.model }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Patch candidates (top 3):" >> "$GITHUB_STEP_SUMMARY"
+          echo "${CANDIDATES}" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload artifacts
-        if: always()
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: backtest_weekly_${{ steps.dates.outputs.start_date }}_to_${{ steps.dates.outputs.end_date }}
           path: |
             out/backtest/**
-            out/reports/**
+
+      - name: Email config
+        id: email_config
+        run: |
+          set -euo pipefail
+          clean() { printf '%s' "${1:-}" | tr -d '\r\n'; }
+
+          MAIL_TO_CLEAN="$(clean "$MAIL_TO")"
+          MAIL_FROM_CLEAN="$(clean "$MAIL_FROM")"
+          SMTP_SERVER_CLEAN="$(clean "$SMTP_SERVER")"
+          SMTP_PORT_CLEAN="$(clean "$SMTP_PORT")"
+          SMTP_USERNAME_CLEAN="$(clean "$SMTP_USERNAME")"
+          SMTP_PASSWORD_CLEAN="$(clean "$SMTP_PASSWORD")"
+
+          if [ -z "$SMTP_PORT_CLEAN" ]; then
+            SMTP_PORT_CLEAN="465"
+          fi
+
+          missing=""
+          [ -n "$MAIL_TO_CLEAN" ] || missing="$missing MAIL_TO"
+          [ -n "$MAIL_FROM_CLEAN" ] || missing="$missing MAIL_FROM"
+          [ -n "$SMTP_SERVER_CLEAN" ] || missing="$missing SMTP_SERVER"
+          [ -n "$SMTP_PORT_CLEAN" ] || missing="$missing SMTP_PORT"
+          ( [ -n "$SMTP_USERNAME_CLEAN" ] && [ -n "$SMTP_PASSWORD_CLEAN" ] ) || missing="$missing SMTP_USERNAME/SMTP_PASSWORD"
+
+          can_email="false"
+          if [ -z "$missing" ]; then
+            can_email="true"
+          fi
+
+          {
+            echo "can_email=${can_email}"
+            echo "missing=${missing# }"
+            echo "smtp_port=${SMTP_PORT_CLEAN}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Email"
+            echo "- send_email requested: ${{ steps.dates.outputs.send_email }}"
+            echo "- can_email: ${can_email}"
+            if [ -n "$missing" ]; then
+              echo "- missing:${missing}"
+            else
+              echo "- missing: (none)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Send email report
-        if: ${{ (github.event_name == 'schedule' || github.event.inputs.send_email == 'true') && env.SMTP_SERVER != '' }}
-        env:
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          MAIL_FROM: ${{ secrets.MAIL_FROM }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
+        id: send_email
+        if: ${{ steps.dates.outputs.send_email == 'true' && steps.email_config.outputs.can_email == 'true' }}
         uses: dawidd6/action-send-mail@v3
+        continue-on-error: true
         with:
           server_address: ${{ env.SMTP_SERVER }}
-          server_port: ${{ env.SMTP_PORT || 465 }}
+          server_port: ${{ steps.email_config.outputs.smtp_port }}
           username: ${{ env.SMTP_USERNAME }}
           password: ${{ env.SMTP_PASSWORD }}
-          subject: "TURF Weekly Backtest Report (${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }})"
+          secure: true
           to: ${{ env.MAIL_TO }}
           from: ${{ env.MAIL_FROM }}
-          secure: true
+          subject: TURF weekly backtest ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}
           html_body: |
             <h2>Weekly Backtest Report</h2>
             <p><strong>Period:</strong> ${{ steps.dates.outputs.start_date }} to ${{ steps.dates.outputs.end_date }}</p>
-            <p>See the GitHub Actions run for full details and downloadable artifacts.</p>
-            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Run</a></p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a></p>
+
+      - name: Email status summary
+        if: ${{ always() }}
+        run: |
+          echo "### Email status" >> "$GITHUB_STEP_SUMMARY"
+          echo "- send_email requested: ${{ steps.dates.outputs.send_email }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- can_email: ${{ steps.email_config.outputs.can_email }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- missing: ${{ steps.email_config.outputs.missing }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.send_email.outcome || '' }}" != "" ]; then
+            echo "- send_mail_outcome: ${{ steps.send_email.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
