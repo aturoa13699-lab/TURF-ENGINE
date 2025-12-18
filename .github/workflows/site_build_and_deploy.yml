@@ -193,6 +193,7 @@ jobs:
 
       - name: Create publish.json
         if: ${{ always() }}
+        # Must run after deploy so steps.deployment.outputs.page_url is populated.
         run: |
           set -euxo pipefail
           mkdir -p out/diagnostics
