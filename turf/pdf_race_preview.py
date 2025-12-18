@@ -1,29 +1,18 @@
-"""Render race previews as HTML and optionally PDF.
+"""Deterministic race preview renderer for HTML and PDF output.
 
-DEPRECATED: This module is superseded by turf.pdf_race_preview which provides:
-- Deterministic output (no live timestamps)
-- Proper file filtering (stake_card*.json only)
-- Deduplication by (date, meeting_id)
-- CLI integration via `python -m cli.turf_cli preview`
+This module generates formatted race preview documents from stake cards.
+PDF rendering requires optional dependency: weasyprint (pip install turf[pdf])
 
-Use instead:
-    PYTHONPATH=. python -m cli.turf_cli preview --stake-cards out/cards --out out/previews
-
-This file is retained for backwards compatibility but will be removed in a future release.
-
----
-
-This module generates formatted race preview documents from stake cards,
-suitable for email attachments or printing.
-
-PDF rendering requires optional dependency: weasyprint
-Install with: pip install weasyprint
+Key invariants:
+- Deterministic output: same input => same output bytes
+- No current time usage - uses run_date from payload or fixed constant
+- No randomness
+- Stable ordering: races/runners in payload order (no re-sorting unless specified)
+- Works with stake_card.json alone; PRO fields rendered only if present
 """
 from __future__ import annotations
 
-import argparse
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +23,9 @@ try:
 except ImportError:
     WEASYPRINT_AVAILABLE = False
 
+
+# Fixed date used when no date is available in payload (deterministic)
+FIXED_FALLBACK_DATE = "2000-01-01"
 
 CSS_STYLES = """
 @page {
@@ -76,6 +68,19 @@ h2 {
     padding: 0.8em;
     margin: 1em 0 0.5em 0;
     border-left: 4px solid #0066cc;
+}
+
+.race-summary {
+    background: #f0f7ff;
+    padding: 0.6em;
+    margin: 0.5em 0;
+    border-radius: 4px;
+    font-size: 10pt;
+}
+
+.race-summary ul {
+    margin: 0.3em 0;
+    padding-left: 1.2em;
 }
 
 table {
@@ -131,21 +136,21 @@ th {
 """
 
 
-def format_percentage(value: Optional[float]) -> str:
+def _format_percentage(value: Optional[float]) -> str:
     """Format a probability as percentage."""
     if value is None:
         return "—"
     return f"{value * 100:.1f}%"
 
 
-def format_price(value: Optional[float]) -> str:
+def _format_price(value: Optional[float]) -> str:
     """Format decimal odds."""
     if value is None:
         return "—"
     return f"${value:.2f}"
 
 
-def format_ev(value: Optional[float]) -> str:
+def _format_ev(value: Optional[float]) -> str:
     """Format expected value with color hint."""
     if value is None:
         return "—"
@@ -154,7 +159,7 @@ def format_ev(value: Optional[float]) -> str:
     return f'<span class="{css_class}">{pct:+.1f}%</span>'
 
 
-def render_runner_row(runner: Dict[str, Any], is_top: bool = False) -> str:
+def _render_runner_row(runner: Dict[str, Any], is_top: bool = False) -> str:
     """Render a single runner row."""
     forecast = runner.get("forecast") or {}
     odds = runner.get("odds_minimal") or {}
@@ -164,30 +169,67 @@ def render_runner_row(runner: Dict[str, Any], is_top: bool = False) -> str:
 
     row_class = 'class="top-pick"' if is_top else ""
 
+    # PRO fields if present
+    ev_marker = ""
+    risk_profile = ""
+    if runner.get("ev_marker"):
+        ev_marker = f' {runner.get("ev_marker")}'
+    if runner.get("risk_profile"):
+        risk_profile = f' [{runner.get("risk_profile")}]'
+
     return f"""
     <tr {row_class}>
         <td class="num">{runner.get('runner_number', '—')}</td>
-        <td>{runner.get('runner_name', 'Unknown')}</td>
+        <td>{runner.get('runner_name', 'Unknown')}{ev_marker}{risk_profile}</td>
         <td><span class="tag tag-{tag_class}">{tag or '—'}</span></td>
         <td class="num">{runner.get('lite_score', 0):.3f}</td>
-        <td class="num">{format_price(odds.get('price_now_dec'))}</td>
-        <td class="num">{format_percentage(forecast.get('win_prob'))}</td>
-        <td class="num">{format_percentage(forecast.get('place_prob'))}</td>
-        <td class="num">{format_ev(forecast.get('value_edge'))}</td>
+        <td class="num">{_format_price(odds.get('price_now_dec'))}</td>
+        <td class="num">{_format_percentage(forecast.get('win_prob'))}</td>
+        <td class="num">{_format_percentage(forecast.get('place_prob'))}</td>
+        <td class="num">{_format_ev(forecast.get('value_edge'))}</td>
     </tr>
     """
 
 
-def render_race(race: Dict[str, Any], meeting: Dict[str, Any]) -> str:
-    """Render a single race section."""
+def _render_race_summary(race_summary: Optional[Dict[str, Any]]) -> str:
+    """Render race summary panel if present."""
+    if not race_summary:
+        return ""
+
+    top_picks = race_summary.get("top_picks", [])
+    value_picks = race_summary.get("value_picks", [])
+    fades = race_summary.get("fades", [])
+    trap_race = race_summary.get("trap_race", False)
+    strategy = race_summary.get("strategy", "")
+
+    return f"""
+    <div class="race-summary">
+        <strong>Race Summary:</strong>
+        <ul>
+            <li>Top picks: {', '.join(map(str, top_picks)) if top_picks else '—'}</li>
+            <li>Value picks: {', '.join(map(str, value_picks)) if value_picks else '—'}</li>
+            <li>Fades: {', '.join(map(str, fades)) if fades else '—'}</li>
+            <li>Trap race: {'Yes' if trap_race else 'No'}</li>
+            <li>Strategy: {strategy or '—'}</li>
+        </ul>
+    </div>
+    """
+
+
+def _render_race(race: Dict[str, Any], meeting: Dict[str, Any]) -> str:
+    """Render a single race section.
+
+    Preserves runner ordering from payload (deterministic).
+    """
     runners = race.get("runners", [])
 
-    # Sort by lite_score descending
-    sorted_runners = sorted(runners, key=lambda r: -(r.get("lite_score") or 0))
-
+    # Preserve original order from payload - do NOT re-sort
     runner_rows = []
-    for i, runner in enumerate(sorted_runners):
-        runner_rows.append(render_runner_row(runner, is_top=(i == 0)))
+    for i, runner in enumerate(runners):
+        runner_rows.append(_render_runner_row(runner, is_top=(i == 0)))
+
+    race_summary = race.get("race_summary")
+    summary_html = _render_race_summary(race_summary)
 
     return f"""
     <div class="race-header">
@@ -197,6 +239,7 @@ def render_race(race: Dict[str, Any], meeting: Dict[str, Any]) -> str:
             Field size: {len(runners)} runners
         </div>
     </div>
+    {summary_html}
     <table>
         <thead>
             <tr>
@@ -218,25 +261,39 @@ def render_race(race: Dict[str, Any], meeting: Dict[str, Any]) -> str:
 
 
 def render_preview_html(stake_card: Dict[str, Any]) -> str:
-    """Render full preview HTML document."""
+    """Render full preview HTML document.
+
+    Args:
+        stake_card: Loaded stake card payload (stake_card.json or stake_card_pro.json)
+
+    Returns:
+        Complete HTML document as string
+
+    Determinism guarantees:
+        - No current time usage; uses date_local from meeting or fixed fallback
+        - Preserves race/runner ordering from input payload
+        - No randomness
+    """
     meeting = stake_card.get("meeting", {})
     races = stake_card.get("races", [])
     engine_context = stake_card.get("engine_context", {})
 
     meeting_id = meeting.get("meeting_id", "Unknown")
     track = meeting.get("track_canonical", meeting_id)
-    date = meeting.get("date_local", "Unknown")
+    # Use date from payload for determinism; fallback to fixed constant
+    date = meeting.get("date_local", FIXED_FALLBACK_DATE)
 
+    # Preserve race order from payload (deterministic)
     race_sections = []
-    for race in sorted(races, key=lambda r: r.get("race_number", 0)):
-        race_sections.append(render_race(race, meeting))
+    for race in races:
+        race_sections.append(_render_race(race, meeting))
 
     warnings = engine_context.get("warnings", [])
     warnings_html = ""
     if warnings:
         warnings_html = f"""
         <div class="meta" style="color: #856404; background: #fff3cd; padding: 0.5em;">
-            ⚠️ Warnings: {', '.join(warnings)}
+            Warnings: {', '.join(warnings)}
         </div>
         """
 
@@ -259,9 +316,9 @@ def render_preview_html(stake_card: Dict[str, Any]) -> str:
     {''.join(race_sections)}
 
     <div class="footer">
-        Generated by TURF ENGINE LITE | {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+        Generated by TURF ENGINE LITE | Run date: {date}
         <br>
-        Forecasts are for informational purposes only. Lite ordering is deterministic and unchanged by overlays.
+        Forecasts are for informational purposes only. Lite ordering is deterministic.
     </div>
 </body>
 </html>"""
@@ -270,7 +327,16 @@ def render_preview_html(stake_card: Dict[str, Any]) -> str:
 def render_preview_pdf(html_content: str, output_path: Path) -> bool:
     """Render HTML to PDF using WeasyPrint.
 
-    Returns True if successful, False if WeasyPrint not available.
+    Args:
+        html_content: Complete HTML document string
+        output_path: Where to write the PDF file
+
+    Returns:
+        True if successful, False if WeasyPrint not available
+
+    Determinism note:
+        WeasyPrint may include CreationDate metadata. For strict byte-reproducibility,
+        consider post-processing to strip or normalize PDF metadata.
     """
     if not WEASYPRINT_AVAILABLE:
         return False
@@ -293,12 +359,22 @@ def render_previews(
         generate_pdf: Whether to generate PDF (requires weasyprint)
 
     Returns:
-        List of generated file info
+        List of generated file info dicts
+
+    Determinism:
+        - Only processes stake_card*.json files (ignores other JSON)
+        - Deduplicates by (date, meeting_id) to avoid duplicate outputs
+        - Processes files in sorted order for consistent results
+        - Uses deterministic naming based on payload content
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Only process stake_card*.json files - ignore runner_vector.json etc.
+    stake_files = sorted(stake_cards_dir.glob("stake_card*.json"))
+
+    # Deduplicate by (date, meeting_id) - first file wins
+    seen: set[tuple[str, str]] = set()
     generated = []
-    stake_files = sorted(stake_cards_dir.glob("*.json"))
 
     for stake_file in stake_files:
         try:
@@ -306,9 +382,19 @@ def render_previews(
         except (json.JSONDecodeError, IOError):
             continue
 
+        # Skip files without valid stake card structure
+        if "races" not in card:
+            continue
+
         meeting = card.get("meeting", {})
         meeting_id = meeting.get("meeting_id", stake_file.stem)
-        date = meeting.get("date_local", "unknown")
+        date = meeting.get("date_local", FIXED_FALLBACK_DATE)
+
+        # Deduplicate by (date, meeting_id)
+        key = (date, meeting_id)
+        if key in seen:
+            continue
+        seen.add(key)
 
         base_name = f"{date}_{meeting_id}"
 
@@ -338,69 +424,46 @@ def render_previews(
     return generated
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Render race previews as HTML/PDF from stake cards"
-    )
-    parser.add_argument(
-        "--stake-cards",
-        type=Path,
-        required=True,
-        help="Directory containing stake card JSON files",
-    )
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=Path("out/previews"),
-        help="Output directory for HTML/PDF files",
-    )
-    parser.add_argument(
-        "--no-pdf",
-        action="store_true",
-        help="Skip PDF generation (HTML only)",
-    )
-    parser.add_argument(
-        "--single",
-        type=Path,
-        help="Render a single stake card file instead of directory",
-    )
-    args = parser.parse_args()
+def render_single_preview(
+    stake_card_path: Path,
+    output_dir: Path,
+    generate_pdf: bool = True,
+) -> Dict[str, Any]:
+    """Render preview for a single stake card file.
 
-    if args.single:
-        # Single file mode
-        if not args.single.exists():
-            raise SystemExit(f"File not found: {args.single}")
+    Args:
+        stake_card_path: Path to stake card JSON file
+        output_dir: Directory for output files
+        generate_pdf: Whether to generate PDF
 
-        card = json.loads(args.single.read_text())
-        html_content = render_preview_html(card)
+    Returns:
+        Dict with paths to generated files
+    """
+    card = json.loads(stake_card_path.read_text())
+    meeting = card.get("meeting", {})
+    meeting_id = meeting.get("meeting_id", stake_card_path.stem)
+    date = meeting.get("date_local", FIXED_FALLBACK_DATE)
 
-        args.out.mkdir(parents=True, exist_ok=True)
-        html_path = args.out / f"{args.single.stem}.html"
-        html_path.write_text(html_content)
-        print(f"HTML: {html_path}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_name = f"{date}_{meeting_id}"
 
-        if not args.no_pdf:
-            pdf_path = args.out / f"{args.single.stem}.pdf"
-            if render_preview_pdf(html_content, pdf_path):
-                print(f"PDF: {pdf_path}")
-            else:
-                print("PDF skipped: weasyprint not installed")
+    html_content = render_preview_html(card)
+    html_path = output_dir / f"{base_name}.html"
+    html_path.write_text(html_content)
 
-    else:
-        # Directory mode
-        if not args.stake_cards.is_dir():
-            raise SystemExit(f"Not a directory: {args.stake_cards}")
+    result = {
+        "stake_card": str(stake_card_path),
+        "meeting_id": meeting_id,
+        "date": date,
+        "html": str(html_path),
+        "pdf": None,
+    }
 
-        results = render_previews(
-            args.stake_cards,
-            args.out,
-            generate_pdf=not args.no_pdf,
-        )
+    if generate_pdf:
+        pdf_path = output_dir / f"{base_name}.pdf"
+        if render_preview_pdf(html_content, pdf_path):
+            result["pdf"] = str(pdf_path)
+        else:
+            result["pdf_error"] = "weasyprint not installed"
 
-        print(f"Rendered {len(results)} preview(s) to {args.out}")
-        for r in results:
-            print(f"  - {r['meeting_id']}: HTML={r['html']}, PDF={r.get('pdf', 'skipped')}")
-
-
-if __name__ == "__main__":
-    main()
+    return result
