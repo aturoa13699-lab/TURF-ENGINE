@@ -13,6 +13,10 @@ DEFAULT_FEATURE_FLAGS: Dict[str, bool] = {
     "race_summary": False,
     "pretty_output": False,
     "mobile_output": False,
+    "enable_trap_race": False,
+    "enable_runner_narratives": False,
+    "enable_runner_fitness": False,
+    "enable_runner_risk": False,
 }
 
 
