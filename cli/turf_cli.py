@@ -26,6 +26,7 @@ from turf.parse_odds import parse_generic_odds_table, parsed_odds_to_market
 from turf.parse_ra import parsed_race_to_market_snapshot, parsed_race_to_speed_sidecar, parse_meeting_html
 from turf.digest import build_strategy_digest, write_strategy_digest
 from turf.simulation import Bet, select_bets_from_stake_card, simulate_bankroll
+from turf.daily_digest import build_daily_digest
 
 app = typer.Typer(help="End-to-end TURF demo runner with overlays and site hooks")
 view_app = typer.Typer(help="Read-only stake-card viewers")

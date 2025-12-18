@@ -106,6 +106,16 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e .
 
+      - name: Guardrail - ensure daily-digest command exists
+        run: |
+          set -euo pipefail
+          if ! python -m cli.turf_cli --help | grep -q "daily-digest"; then
+            echo "::error::Expected Typer command 'daily-digest' not found. This workflow depends on it."
+            echo "CLI help output:"
+            python -m cli.turf_cli --help || true
+            exit 1
+          fi
+
       - name: Resolve run date
         id: date
         run: |
