@@ -17,12 +17,6 @@ from engine.turf_engine_pro import (
     overlay_from_stake_card,
     pro_overlay_logit_win_place_v0,
 )
-from turf.simulation import (
-    select_bets_from_stake_card,
-    sha256_file,
-    simulate_bankroll,
-    write_json,
-)
 from turf.feature_flags import resolve_feature_flags
 from turf.race_summary import summarize_race
 from turf.value import derive_runner_value_fields
@@ -93,26 +87,6 @@ def _build_engine_inputs(market: dict, speed: dict, lite_scores: dict) -> dict:
     }
 
 
-def _meeting_meta(stake_card: dict) -> tuple[str, str]:
-    meeting = stake_card.get("meeting", {}) or {}
-    meeting_id = meeting.get("meeting_id") or stake_card.get("meeting_id") or "unknown_meeting"
-    date_local = meeting.get("date_local") or stake_card.get("date_local") or "0000-00-00"
-    return meeting_id, date_local
-
-
-def _discover_stake_cards(root: Path, use_pro: bool) -> list[Path]:
-    cards: list[Path] = []
-    for lite_path in sorted(root.rglob("stake_card.json")):
-        pro_path = lite_path.with_name("stake_card_pro.json")
-        chosen = pro_path if use_pro and pro_path.exists() else lite_path
-        cards.append(chosen)
-    if use_pro:
-        for pro_path in sorted(root.rglob("stake_card_pro.json")):
-            if pro_path not in cards:
-                cards.append(pro_path)
-    return cards
-
-
 def _runner_value_fields(runner: dict) -> dict:
     derived = derive_runner_value_fields(runner)
     forecast = runner.get("forecast") or {}
@@ -159,10 +133,6 @@ def demo_run(
     date: Optional[str] = typer.Option(None, help="Date stamp for demo meeting (YYYY-MM-DD)"),
     enable_value_fields: bool = typer.Option(False, help="Enable PRO value/race summary derived fields (Plan 020)"),
     enable_race_summary: bool = typer.Option(False, help="Enable race summary block in PRO output"),
-    enable_runner_narratives: bool = typer.Option(False, help="Enable runner narratives (Plan 060, PRO-only)"),
-    enable_runner_fitness: bool = typer.Option(False, help="Enable runner fitness flags (Plan 060, PRO-only)"),
-    enable_runner_risk: bool = typer.Option(False, help="Enable runner risk tags/profile (Plan 060, PRO-only)"),
-    enable_trap_race: bool = typer.Option(False, help="Enable race-level trap_race flag (Plan 060, PRO-only)"),
 ):
     """Run the full Lite + PRO overlay pipeline using bundled demo fixtures."""
 
@@ -194,10 +164,6 @@ def demo_run(
         {
             "ev_bands": enable_value_fields or enable_race_summary,
             "race_summary": enable_race_summary,
-            "enable_runner_narratives": enable_runner_narratives,
-            "enable_runner_fitness": enable_runner_fitness,
-            "enable_runner_risk": enable_runner_risk,
-            "enable_trap_race": enable_trap_race,
         }
     )
     stake_card_pro = apply_pro_overlay_to_stake_card(
@@ -223,10 +189,6 @@ def apply_overlay(
     runner_vector_path: Optional[pathlib.Path] = typer.Option(None, help="Optional precomputed runner_vector JSON"),
     enable_value_fields: bool = typer.Option(False, help="Enable PRO value/race summary derived fields (Plan 020)"),
     enable_race_summary: bool = typer.Option(False, help="Enable race summary block in PRO output"),
-    enable_runner_narratives: bool = typer.Option(False, help="Enable runner narratives (Plan 060, PRO-only)"),
-    enable_runner_fitness: bool = typer.Option(False, help="Enable runner fitness flags (Plan 060, PRO-only)"),
-    enable_runner_risk: bool = typer.Option(False, help="Enable runner risk tags/profile (Plan 060, PRO-only)"),
-    enable_trap_race: bool = typer.Option(False, help="Enable race-level trap_race flag (Plan 060, PRO-only)"),
 ):
     """Apply the deterministic PRO overlay to an existing stake card."""
 
@@ -252,10 +214,6 @@ def apply_overlay(
         {
             "ev_bands": enable_value_fields or enable_race_summary,
             "race_summary": enable_race_summary,
-            "enable_runner_narratives": enable_runner_narratives,
-            "enable_runner_fitness": enable_runner_fitness,
-            "enable_runner_risk": enable_runner_risk,
-            "enable_trap_race": enable_trap_race,
         }
     )
     updated = apply_pro_overlay_to_stake_card(
@@ -287,103 +245,6 @@ def render_site(
     spec.loader.exec_module(module)  # type: ignore[arg-type]
     module.build_site(stake_cards, out, derive_on_render=derive_on_render)
     typer.echo(f"Site rendered to {out}")
-
-
-@app.command("bankroll")
-def bankroll(
-    stake_cards: pathlib.Path = typer.Option(Path("out/cards"), help="Directory containing stake cards"),
-    single: Optional[pathlib.Path] = typer.Option(None, help="Optional single stake card file to process"),
-    use_pro: bool = typer.Option(True, help="Prefer stake_card_pro.json when available"),
-    out: pathlib.Path = typer.Option(Path("out/derived/sim"), help="Output directory for simulation results"),
-    seed: int = typer.Option(123, help="RNG seed for determinism"),
-    iters: int = typer.Option(1000, help="Simulation iterations"),
-    bankroll_start: float = typer.Option(100.0, help="Starting bankroll"),
-    policy: str = typer.Option("flat", help="Staking policy: flat|kelly|fractional_kelly"),
-    flat_stake: float = typer.Option(1.0, help="Flat stake size (for flat policy)"),
-    kelly_fraction: float = typer.Option(0.25, help="Fractional Kelly multiplier"),
-    max_stake_frac: float = typer.Option(0.05, help="Cap per bet as fraction of bankroll"),
-    min_ev: Optional[float] = typer.Option(None, help="Minimum EV (ev_1u) required"),
-    min_edge: Optional[float] = typer.Option(None, help="Minimum value_edge required"),
-    require_positive_ev: bool = typer.Option(True, help="Require ev_1u > 0 by default"),
-):
-    """Run deterministic bankroll simulation from stake cards (PRO/derived-only)."""
-
-    paths: list[Path] = []
-    if single:
-        target = Path(single)
-        if target.is_dir():
-            target = target / ("stake_card_pro.json" if use_pro else "stake_card.json")
-        if use_pro and target.name == "stake_card.json":
-            pro = target.with_name("stake_card_pro.json")
-            if pro.exists():
-                target = pro
-        paths = [target]
-    else:
-        root = Path(stake_cards)
-        if not root.exists():
-            raise typer.BadParameter(f"Stake cards directory not found: {root}")
-        paths = _discover_stake_cards(root, use_pro=use_pro)
-
-    if not paths:
-        raise typer.BadParameter("No stake_card.json files found to simulate.")
-
-    for card_path in paths:
-        stake_card = json.loads(card_path.read_text())
-        meeting_id, date_local = _meeting_meta(stake_card)
-        bets = select_bets_from_stake_card(
-            stake_card,
-            require_positive_ev=require_positive_ev,
-            min_ev=min_ev,
-            min_edge=min_edge,
-        )
-        summary = simulate_bankroll(
-            bets=bets,
-            iters=iters,
-            seed=seed,
-            bankroll_start=bankroll_start,
-            policy=policy,
-            flat_stake=flat_stake,
-            kelly_fraction=kelly_fraction,
-            max_stake_frac=max_stake_frac,
-        )
-
-        base = out / str(date_local) / str(meeting_id) / card_path.stem
-        bets_path = base / "bets_selected.json"
-        summary_path = base / "bankroll_summary.json"
-        config_path = base / "strategy_inputs.json"
-
-        bets_payload = [asdict(b) for b in bets]
-        input_sha = sha256_file(card_path)
-
-        summary_with_meta = {
-            **summary,
-            "input": {
-                "path": str(card_path),
-                "input_sha256": input_sha,
-                "meeting_id": meeting_id,
-                "date_local": date_local,
-            },
-        }
-
-        write_json(bets_path, {"bets": bets_payload, "count": len(bets_payload)})
-        write_json(summary_path, summary_with_meta)
-        write_json(
-            config_path,
-            {
-                "seed": seed,
-                "iters": iters,
-                "policy": policy,
-                "flat_stake": flat_stake,
-                "kelly_fraction": kelly_fraction,
-                "max_stake_frac": max_stake_frac,
-                "min_ev": min_ev,
-                "min_edge": min_edge,
-                "require_positive_ev": require_positive_ev,
-                "input_sha256": input_sha,
-            },
-        )
-
-        typer.echo(f"Simulated bankroll for {card_path} -> {summary_path}")
 
 
 @app.command("filter-value")
@@ -462,6 +323,63 @@ def view_stake_card(
     ordered = sorted(runners, key=lambda r: (-r.get("lite_score", 0.0), r.get("runner_number") or 0))
     lines.extend(formatter(r) for r in ordered)
     typer.echo("\n".join(lines))
+
+
+@app.command("preview")
+def preview(
+    stake_cards: pathlib.Path = typer.Option(
+        Path("out/cards"), "--stake-cards", exists=True, help="Directory containing stake card JSON files"
+    ),
+    out: pathlib.Path = typer.Option(Path("out/previews"), "--out", help="Output directory for HTML/PDF files"),
+    format: str = typer.Option("html", "--format", help="Output format: html, pdf, or both"),
+    single: Optional[pathlib.Path] = typer.Option(
+        None, "--single", help="Render a single stake card file instead of directory"
+    ),
+    use_pro: bool = typer.Option(
+        False, "--use-pro", help="Prefer stake_card_pro.json if available"
+    ),
+):
+    """Generate race preview documents (HTML/PDF) from stake cards.
+
+    This command produces deterministic preview outputs suitable for email
+    attachments or printing. PDF generation requires the [pdf] extra:
+    pip install turf[pdf]
+
+    PRO fields (EV markers, risk profiles, race summaries) are rendered
+    only if present in the input stake card. No derivation is performed.
+    """
+    from turf.pdf_race_preview import render_previews, render_single_preview
+
+    generate_pdf = format.lower() in ("pdf", "both")
+
+    if single:
+        # Single file mode
+        if not single.exists():
+            typer.echo(f"Error: File not found: {single}", err=True)
+            raise typer.Exit(1)
+
+        result = render_single_preview(single, out, generate_pdf=generate_pdf)
+        typer.echo(f"HTML: {result['html']}")
+        if result.get("pdf"):
+            typer.echo(f"PDF: {result['pdf']}")
+        elif result.get("pdf_error"):
+            typer.echo(f"PDF skipped: {result['pdf_error']}")
+    else:
+        # Directory mode
+        if not stake_cards.is_dir():
+            typer.echo(f"Error: Not a directory: {stake_cards}", err=True)
+            raise typer.Exit(1)
+
+        results = render_previews(stake_cards, out, generate_pdf=generate_pdf)
+
+        if not results:
+            typer.echo(f"No stake cards found in {stake_cards}")
+            raise typer.Exit(1)
+
+        typer.echo(f"Rendered {len(results)} preview(s) to {out}")
+        for r in results:
+            pdf_info = r.get("pdf", r.get("pdf_error", "skipped"))
+            typer.echo(f"  - {r['meeting_id']}: HTML={r['html']}, PDF={pdf_info}")
 
 
 if __name__ == "__main__":

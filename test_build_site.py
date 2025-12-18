@@ -115,19 +115,6 @@ def test_build_site_does_not_derive_by_default(tmp_path: Path):
     assert "🟢" not in race_html
 
 
-def test_parse_stake_card_defaults_read_only(tmp_path: Path):
-    stake_path = _build_minimal_stake_card(tmp_path)
-
-    module = load_build_site()
-    races = module.parse_stake_card(stake_path)
-
-    assert races
-    race = races[0]
-
-    assert race.race_summary is None
-    assert all(r.ev_marker is None for r in race.runners)
-
-
 def test_build_site_can_optionally_derive(tmp_path: Path):
     stake_path = _build_minimal_stake_card(tmp_path)
     payload = json.loads(stake_path.read_text())

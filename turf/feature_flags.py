@@ -13,12 +13,6 @@ DEFAULT_FEATURE_FLAGS: Dict[str, bool] = {
     "race_summary": False,
     "pretty_output": False,
     "mobile_output": False,
-
-    # Plan 060 (PRO-only): runner narratives / fitness / risk
-    "enable_runner_narratives": False,
-    "enable_runner_fitness": False,
-    "enable_runner_risk": False,
-    "enable_trap_race": False,
 }
 
 
