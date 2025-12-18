@@ -1,0 +1,159 @@
+name: Backfill Publish (Derived-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Number of days to backfill"
+        required: false
+        default: 90
+        type: number
+      seed:
+        description: "Deterministic seed for simulations (if enabled)"
+        required: false
+        default: 1337
+        type: number
+      write_per_meeting:
+        description: "Write per-meeting digests"
+        required: false
+        default: true
+        type: boolean
+      render_html:
+        description: "Render digest HTML wrappers"
+        required: false
+        default: true
+        type: boolean
+      publish_derived_only:
+        description: "Always true: publish derived-only backfill outputs"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guardrail - forbid file-mode CLI
+        run: |
+          if grep -RIn --line-number -E 'python\s+cli/turf_cli\.py' .github/workflows; then
+            echo "::error::File-mode CLI invocation found in workflows. Use: python -m cli.turf_cli"
+            exit 1
+          fi
+
+      - name: Guardrail - forbid secrets in if
+        run: |
+          if grep -RIn --line-number -E 'if:.*secrets\.' .github/workflows; then
+            echo "::error::secrets.* used inside if: expression. Map secrets to env and gate on env.*"
+            exit 1
+          fi
+
+      - name: Enforce derived-only publish flag
+        run: |
+          if [ "${{ inputs.publish_derived_only }}" != "true" ]; then
+            echo "::error::publish_derived_only must remain true for derived-only backfill publishing."
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Run digest backfill
+        run: |
+          set -euxo pipefail
+          mkdir -p out/backfills
+          BACKFILL_FLAGS=""
+          if [ "${{ inputs.write_per_meeting }}" = "true" ]; then
+            BACKFILL_FLAGS="$BACKFILL_FLAGS --write-per-meeting"
+          else
+            BACKFILL_FLAGS="$BACKFILL_FLAGS --no-write-per-meeting"
+          fi
+          if [ "${{ inputs.render_html }}" = "true" ]; then
+            BACKFILL_FLAGS="$BACKFILL_FLAGS --render-html"
+          else
+            BACKFILL_FLAGS="$BACKFILL_FLAGS --no-render-html"
+          fi
+
+          python -m cli.turf_cli backfill-digests \
+            --days "${{ inputs.days }}" \
+            --out out/backfills \
+            --seed "${{ inputs.seed }}" \
+            $BACKFILL_FLAGS
+
+      - name: Prepare Pages content (derived-only)
+        run: |
+          set -euxo pipefail
+          rm -rf public
+          mkdir -p public/backfills
+          cp -R out/backfills/* public/backfills/
+
+          cat > public/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>TURF backfill digests</title>
+          </head>
+          <body>
+            <main>
+              <h1>TURF backfill digests (derived-only)</h1>
+              <p>View the backfill index at <a href="/backfills/index.html">/backfills/index.html</a>.</p>
+              <p>Artifacts are derived-only and deterministic.</p>
+            </main>
+          </body>
+          </html>
+          EOF
+
+          cat > public/backfills/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>TURF backfill index</title>
+          </head>
+          <body>
+            <main>
+              <h1>TURF backfill index</h1>
+              <ul>
+                <li><a href="index.md">index.md</a> (Markdown)</li>
+                <li><a href="index.json">index.json</a> (JSON)</li>
+              </ul>
+              <p>Per-day artifacts are located in the dated subdirectories.</p>
+            </main>
+          </body>
+          </html>
+          EOF
+
+          touch public/.nojekyll
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
