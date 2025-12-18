@@ -1,7 +1,5 @@
 # Plan 066: Plan 060 Regression Fix (Runner Summary + Trap Race Gating)
 
-Why: Plan 060 tests were failing because runner summaries were absent when narratives were enabled and trap_race was gated on the wrong flag.
-
 ## Scope
 Fix the two failing Plan 060 regression tests by adjusting PRO overlay gating and runner insights output:
 1) Ensure `summary` is present when `enable_runner_narratives=true`.
@@ -67,3 +65,4 @@ Run from repo root after identity check:
 ## Rollback Plan
 - Revert only the overlay gating hunk and/or insights summary changes if any unrelated regressions appear.
 - Keep feature flag defaults and workflow 065 changes intact.
+
