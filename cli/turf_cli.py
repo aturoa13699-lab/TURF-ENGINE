@@ -17,6 +17,7 @@ from engine.turf_engine_pro import (
     overlay_from_stake_card,
     pro_overlay_logit_win_place_v0,
 )
+from turf.backfill_digests import BackfillConfig, backfill_digests as run_backfill_digests
 from turf.feature_flags import resolve_feature_flags
 from turf.race_summary import summarize_race
 from turf.value import derive_runner_value_fields
@@ -25,6 +26,7 @@ from turf.parse_odds import parse_generic_odds_table, parsed_odds_to_market
 from turf.parse_ra import parsed_race_to_market_snapshot, parsed_race_to_speed_sidecar, parse_meeting_html
 from turf.digest import build_strategy_digest, write_strategy_digest
 from turf.simulation import Bet, select_bets_from_stake_card, simulate_bankroll
+from turf.daily_digest import build_daily_digest
 
 app = typer.Typer(help="End-to-end TURF demo runner with overlays and site hooks")
 view_app = typer.Typer(help="Read-only stake-card viewers")
@@ -361,6 +363,101 @@ def digest(
 
     write_strategy_digest(out_dir=str(out), digest=digest_payload, filename_base="strategy_digest")
     typer.echo(f"Wrote {out / 'strategy_digest.json'} and {out / 'strategy_digest.md'} (bets={len(bets)})")
+
+
+@app.command("daily-digest")
+def daily_digest(
+    stake_cards: pathlib.Path = typer.Option(
+        ..., "--stake-cards", exists=True, file_okay=False, dir_okay=True, help="Directory containing stake-card JSON files"
+    ),
+    out: pathlib.Path = typer.Option(Path("out/derived"), "--out", help="Output directory for daily digest artifacts"),
+    prefer_pro: bool = typer.Option(True, help="Prefer *_pro.json when both Lite and PRO exist for same meeting"),
+    require_positive_ev: bool = typer.Option(True, help="Require forecast.ev_1u > 0.0"),
+    min_ev: Optional[float] = typer.Option(None, help="Minimum forecast.ev_1u (optional)"),
+    min_edge: Optional[float] = typer.Option(None, help="Minimum forecast.value_edge (optional)"),
+    policy: str = typer.Option("flat", help="Stake policy: flat | kelly | fractional_kelly"),
+    bankroll_start: float = typer.Option(1000.0, help="Starting bankroll for stake sizing"),
+    flat_stake: float = typer.Option(20.0, help="Flat stake size (policy=flat)"),
+    kelly_fraction: float = typer.Option(0.25, help="Kelly fraction (policy=fractional_kelly)"),
+    max_stake_frac: float = typer.Option(0.02, help="Max stake fraction of bankroll per bet"),
+    simulate: bool = typer.Option(False, help="Run deterministic bankroll simulation and embed summary"),
+    iters: int = typer.Option(10000, help="Simulation iterations (if --simulate)"),
+    seed: int = typer.Option(1337, help="Simulation RNG seed (if --simulate)"),
+    write_per_meeting: bool = typer.Option(
+        False, "--write-per-meeting", help="Write per-meeting digest artifacts under out/meetings/... (Plan 072)"
+    ),
+):
+    """Generate a deterministic daily digest (directory aggregation) (derived-only).
+
+    Writes:
+      - daily_digest.json
+      - daily_digest.md
+    And optionally (Plan 072):
+      - meetings/<date>_<slug>/strategy_digest.{json,md}
+    """
+
+    daily = build_daily_digest(
+        stake_cards_dir=Path(stake_cards),
+        out_dir=Path(out),
+        prefer_pro=prefer_pro,
+        require_positive_ev=require_positive_ev,
+        min_ev=min_ev,
+        min_edge=min_edge,
+        policy=policy,
+        bankroll_start=bankroll_start,
+        flat_stake=flat_stake,
+        kelly_fraction=kelly_fraction,
+        max_stake_frac=max_stake_frac,
+        simulate=simulate,
+        iters=iters,
+        seed=seed,
+        write_per_meeting=write_per_meeting,
+    )
+
+    typer.echo(
+        f"Wrote {out / 'daily_digest.json'} and {out / 'daily_digest.md'} (meetings={daily.get('counts', {}).get('meetings_included', 0)})"
+    )
+
+@app.command("backfill-digests")
+def backfill_digests(
+    from_date: Optional[str] = typer.Option(None, "--from-date", help="Start date YYYY-MM-DD (optional)"),
+    to_date: Optional[str] = typer.Option(None, "--to-date", help="End date YYYY-MM-DD (optional)"),
+    days: int = typer.Option(90, "--days", help="Number of days to backfill if dates are partially/unspecified"),
+    out: pathlib.Path = typer.Option(Path("out/backfills"), "--out", help="Base output directory for backfill artifacts"),
+    stake_cards_dir: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--stake-cards-dir",
+        help="Optional stake cards root; uses subdir named YYYY-MM-DD when present, otherwise falls back to demo fixtures",
+    ),
+    prefer_pro: bool = typer.Option(True, "--prefer-pro/--no-prefer-pro", help="Prefer stake_card_pro when both exist"),
+    simulate: bool = typer.Option(False, "--simulate/--no-simulate", help="Run bankroll simulation during digest"),
+    seed: int = typer.Option(1337, "--seed", help="RNG seed (required when --simulate)"),
+    write_per_meeting: bool = typer.Option(
+        True, "--write-per-meeting/--no-write-per-meeting", help="Write per-meeting digests for each day"
+    ),
+    render_html: bool = typer.Option(
+        True, "--render-html/--no-render-html", help="Render digest HTML wrappers under public/derived per day"
+    ),
+):
+    """Deterministically backfill daily digests over a date range (derived-only)."""
+
+    cfg = BackfillConfig(
+        from_date=from_date,
+        to_date=to_date,
+        days=days,
+        out_dir=out,
+        stake_cards_dir=stake_cards_dir,
+        prefer_pro=prefer_pro,
+        simulate=simulate,
+        seed=seed,
+        write_per_meeting=write_per_meeting,
+        render_html=render_html,
+    )
+    index_payload = run_backfill_digests(cfg)
+    dates = [d.get("date") for d in index_payload.get("dates", [])]
+    typer.echo(f"Backfill complete ({len(dates)} day(s)) -> {out / 'index.json'}")
+    if dates:
+        typer.echo(f"Dates: {', '.join(dates)}")
 
 
 @view_app.command("stake-card")
