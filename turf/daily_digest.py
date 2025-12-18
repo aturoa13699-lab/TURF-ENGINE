@@ -10,11 +10,10 @@ single daily digest artifacts. It must:
 """
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from turf.digest import build_strategy_digest, write_strategy_digest
+from turf.digest import build_strategy_digest
 from turf.simulation import select_bets_from_stake_card, simulate_bankroll, write_json
 
 
@@ -29,14 +28,6 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def _slugify(text: str) -> str:
-    """Deterministic, filesystem-safe slug."""
-    s = str(text).strip().lower()
-    s = re.sub(r"[^a-z0-9]+", "_", s)
-    s = s.strip("_")
-    return s or "unknown"
-
-
 def discover_stake_cards(dir_path: Path) -> List[Path]:
     """Deterministically discover candidate stake-card JSON files in a directory."""
     if not dir_path.exists() or not dir_path.is_dir():
@@ -49,13 +40,6 @@ def discover_stake_cards(dir_path: Path) -> List[Path]:
 
 def _is_pro_path(p: Path) -> bool:
     return p.name.lower().endswith("_pro.json")
-
-def _slugify(text: str) -> str:
-    """Deterministic, filesystem-safe slug."""
-    s = str(text).strip().lower()
-    s = re.sub(r"[^a-z0-9]+", "_", s)
-    s = s.strip("_")
-    return s or "unknown"
 
 
 def dedupe_by_meeting(paths: List[Path], *, prefer_pro: bool) -> List[Path]:
@@ -100,16 +84,10 @@ def render_daily_digest_markdown(daily: Dict[str, Any]) -> str:
         date_local = m.get("date_local") or "0000-00-00"
         source_path = m.get("source_path") or ""
         bets_count = m.get("bets_count") or 0
-        digest_md_path = m.get("digest_md_path")
-        digest_json_path = m.get("digest_json_path")
         lines.append(f"## {meeting_id} ({date_local})")
         if source_path:
             lines.append(f"- source: {source_path}")
         lines.append(f"- bets: {bets_count}")
-        if digest_md_path:
-            lines.append(f"- meeting_digest_md: {digest_md_path}")
-        if digest_json_path:
-            lines.append(f"- meeting_digest_json: {digest_json_path}")
         lines.append("")
 
         # Optional: include a compact bet list if present in the embedded digest.
@@ -136,8 +114,6 @@ def build_daily_digest(
     stake_cards_dir: Path,
     out_dir: Path,
     prefer_pro: bool = True,
-    write_per_meeting: bool = False,
-    meetings_subdir: str = "meetings",
     require_positive_ev: bool = True,
     min_ev: float | None = None,
     min_edge: float | None = None,
@@ -155,7 +131,6 @@ def build_daily_digest(
     selected = dedupe_by_meeting(files, prefer_pro=prefer_pro)
 
     meetings_out: List[Dict[str, Any]] = []
-    per_meeting_index: List[Dict[str, Any]] = []
 
     for p in selected:
         payload = _load_json(p)
@@ -199,32 +174,6 @@ def build_daily_digest(
             simulation_summary=sim_summary,
         )
 
-        digest_json_path_rel = None
-        digest_md_path_rel = None
-        if write_per_meeting:
-            meeting_slug = _slugify(meeting_id)
-            meeting_folder = f"{date_local}_{meeting_slug}"
-            meeting_out_dir = out_dir / meetings_subdir / meeting_folder
-            # Writes:
-            #   <meeting_out_dir>/strategy_digest.json
-            #   <meeting_out_dir>/strategy_digest.md
-            write_strategy_digest(
-                out_dir=str(meeting_out_dir),
-                digest=digest_payload,
-                filename_base="strategy_digest",
-            )
-            digest_json_path_rel = f"{meetings_subdir}/{meeting_folder}/strategy_digest.json"
-            digest_md_path_rel = f"{meetings_subdir}/{meeting_folder}/strategy_digest.md"
-            per_meeting_index.append(
-                {
-                    "date_local": date_local,
-                    "meeting_id": meeting_id,
-                    "source_path": str(p),
-                    "digest_json_path": digest_json_path_rel,
-                    "digest_md_path": digest_md_path_rel,
-                }
-            )
-
         meetings_out.append(
             {
                 "meeting_id": meeting_id,
@@ -232,26 +181,15 @@ def build_daily_digest(
                 "source_path": str(p),
                 "bets_count": len(bets),
                 "strategy_digest": digest_payload,
-                **(
-                    {
-                        "digest_json_path": digest_json_path_rel,
-                        "digest_md_path": digest_md_path_rel,
-                    }
-                    if write_per_meeting
-                    else {}
-                ),
             }
         )
 
     meetings_out = sorted(meetings_out, key=lambda m: (m.get("date_local") or "0000-00-00", m.get("meeting_id") or "", m.get("source_path") or ""))
-    per_meeting_index = sorted(per_meeting_index, key=lambda m: (m.get("date_local") or "0000-00-00", m.get("meeting_id") or "", m.get("digest_json_path") or ""))
 
     daily: Dict[str, Any] = {
         "config": {
             "stake_cards_dir": str(stake_cards_dir),
             "prefer_pro": prefer_pro,
-            "write_per_meeting": write_per_meeting,
-            "meetings_subdir": meetings_subdir,
             "require_positive_ev": require_positive_ev,
             "min_ev": min_ev,
             "min_edge": min_edge,
@@ -274,8 +212,5 @@ def build_daily_digest(
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / "daily_digest.json", daily)
     (out_dir / "daily_digest.md").write_text(render_daily_digest_markdown(daily))
-
-    if write_per_meeting:
-        (out_dir / meetings_subdir).mkdir(parents=True, exist_ok=True)
-        write_json(out_dir / meetings_subdir / "index.json", {"meetings": per_meeting_index})
     return daily
+
