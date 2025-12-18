@@ -37,6 +37,11 @@ on:
         required: false
         type: boolean
         default: false
+      publish_derived_only:
+        description: "If true, skip site/build_site.py and only publish derived digest pages under public/derived."
+        required: false
+        type: boolean
+        default: false
     secrets:
       SMTP_SERVER:
         required: false
@@ -100,6 +105,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e .
+
+      - name: Guardrail - ensure daily-digest command exists
+        run: |
+          set -euo pipefail
+          if ! python -m cli.turf_cli --help | grep -q "daily-digest"; then
+            echo "::error::Expected Typer command 'daily-digest' not found. This workflow depends on it."
+            echo "CLI help output:"
+            python -m cli.turf_cli --help || true
+            exit 1
+          fi
 
       - name: Resolve run date
         id: date
@@ -168,6 +183,7 @@ jobs:
             --write-per-meeting
 
       - name: Build site into public/
+        if: ${{ !inputs.publish_derived_only }}
         run: |
           set -euxo pipefail
           rm -rf public
@@ -177,6 +193,28 @@ jobs:
           fi
 
           python site/build_site.py --stake-cards "${{ inputs.stake_cards_path }}" --out public $RENDER_FLAGS
+
+      - name: Prepare derived-only public skeleton
+        if: ${{ inputs.publish_derived_only }}
+        run: |
+          set -euxo pipefail
+          rm -rf public
+          mkdir -p public/derived
+          cat > public/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>TURF derived digests</title>
+          </head>
+          <body>
+            <main>
+              <h1>TURF derived digests</h1>
+              <p>Digest artifacts are available under <a href="derived/index.html">/derived/index.html</a>.</p>
+            </main>
+          </body>
+          </html>
+          EOF
 
       - name: Stage digest artifacts into public/derived
         run: |
@@ -190,6 +228,12 @@ jobs:
         run: |
           set -euxo pipefail
           python -m turf.digest_pages --derived-dir out/derived --public-derived-dir public/derived
+
+      - name: Ensure Pages metadata files
+        run: |
+          set -euo pipefail
+          mkdir -p public
+          touch public/.nojekyll
 
       - name: Smoke check (Lite-only render has no derived extras)
         if: ${{ !inputs.render_derive_extras }}
