@@ -1,18 +1,24 @@
 from __future__ import annotations
 
-"""Plan 071: deterministic multi-stake-card daily digest aggregation (derived-only).
+"""Plan 071/072: deterministic multi-stake-card daily digest aggregation (derived-only).
 
-This module aggregates multiple stake-card JSON files from a directory into
-single daily digest artifacts. It must:
-- remain deterministic
-- avoid mutating input payloads
-- produce stable ordering across platforms
+This module aggregates stake-card JSON files from a directory into:
+  - out_dir/daily_digest.json
+  - out_dir/daily_digest.md
+
+Plan 072 adds an opt-in:
+  - out_dir/meetings/<date>_<meeting_slug>/strategy_digest.{json,md}
+and records relative paths in the daily index.
+
+Hard constraints:
+  - deterministic output (stable ordering, no timestamps)
+  - do not mutate input payloads (read-only)
 """
 
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from turf.digest import build_strategy_digest
 from turf.simulation import select_bets_from_stake_card, simulate_bankroll, write_json
@@ -26,6 +32,7 @@ def _meeting_key(payload: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
+    # Read-only; do not mutate.
     return json.loads(path.read_text())
 
 
@@ -35,7 +42,6 @@ def discover_stake_cards(dir_path: Path) -> List[Path]:
         return []
     files = [p for p in dir_path.glob("*.json") if p.is_file()]
     files_sorted = sorted(files, key=lambda p: str(p))
-    # Only keep stake-card-ish files.
     return [p for p in files_sorted if "stake_card" in p.name]
 
 
@@ -64,6 +70,44 @@ def dedupe_by_meeting(paths: List[Path], *, prefer_pro: bool) -> List[Path]:
     return [p for _, p in items]
 
 
+def _slugify(value: str) -> str:
+    """Deterministic meeting slug for filesystem paths."""
+    s = (value or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = s.strip("_")
+    return s or "unknown"
+
+
+def _render_meeting_digest_markdown(digest_payload: Dict[str, Any]) -> str:
+    """Simple deterministic Markdown for a per-meeting digest."""
+    meeting = digest_payload.get("meeting", {}) or {}
+    meeting_id = meeting.get("meeting_id") or "unknown_meeting"
+    date_local = meeting.get("date_local") or "0000-00-00"
+    bets = digest_payload.get("bets") or []
+
+    lines: List[str] = []
+    lines.append(f"# Strategy Digest: {meeting_id} ({date_local})")
+    lines.append("")
+    lines.append(f"- bets: {len(bets)}")
+    lines.append("")
+    if bets:
+        lines.append("## Bets")
+        for b in bets:
+            # tolerate dict (expected) or string
+            if isinstance(b, dict):
+                race_no = b.get("race_number")
+                rn = b.get("runner_number")
+                bt = b.get("bet_type") or b.get("type") or "BET"
+                stake = b.get("stake")
+                price = b.get("odds_dec") or b.get("price")
+                reason = b.get("reason") or ""
+                lines.append(f"- R{race_no} #{rn} {bt} stake={stake} price={price} {reason}".rstrip())
+            else:
+                lines.append(f"- {b}")
+    lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_daily_digest_markdown(daily: Dict[str, Any]) -> str:
     """Render stable Markdown for the daily digest (no timestamps)."""
     lines: List[str] = []
@@ -89,18 +133,16 @@ def render_daily_digest_markdown(daily: Dict[str, Any]) -> str:
         if source_path:
             lines.append(f"- source: {source_path}")
         lines.append(f"- bets: {bets_count}")
-        # Plan 072: surfaced only when present (flagged).
+        # Plan 072: optional per-meeting artifact pointers
         if m.get("digest_md_path"):
             lines.append(f"- meeting_digest_md: {m.get('digest_md_path')}")
         if m.get("digest_json_path"):
             lines.append(f"- meeting_digest_json: {m.get('digest_json_path')}")
         lines.append("")
 
-        # Optional: include a compact bet list if present in the embedded digest.
         digest = m.get("strategy_digest") or {}
         bet_rows = digest.get("bets") or []
         for b in bet_rows:
-            # Keep stable formatting; tolerate dict or string.
             if isinstance(b, dict):
                 rn = b.get("runner_number")
                 bt = b.get("bet_type") or b.get("type") or "BET"
@@ -112,43 +154,6 @@ def render_daily_digest_markdown(daily: Dict[str, Any]) -> str:
                 lines.append(f"- {b}")
         lines.append("")
 
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _slugify(value: str) -> str:
-    """Deterministic slug for meeting folder names."""
-    s = (value or "").strip().lower()
-    s = re.sub(r"[^a-z0-9]+", "_", s)
-    s = s.strip("_")
-    return s or "unknown"
-
-
-def _render_meeting_digest_markdown(digest_payload: Dict[str, Any]) -> str:
-    """Deterministic, timestamp-free Markdown for a per-meeting digest."""
-    meeting = digest_payload.get("meeting", {}) or {}
-    meeting_id = meeting.get("meeting_id") or "unknown_meeting"
-    date_local = meeting.get("date_local") or "0000-00-00"
-    bets = digest_payload.get("bets") or []
-
-    lines: List[str] = []
-    lines.append(f"# Strategy Digest: {meeting_id} ({date_local})")
-    lines.append("")
-    lines.append(f"- bets: {len(bets)}")
-    lines.append("")
-    if bets:
-        lines.append("## Bets")
-        for b in bets:
-            if isinstance(b, dict):
-                race_no = b.get("race_number")
-                rn = b.get("runner_number")
-                bt = b.get("bet_type") or b.get("type") or "BET"
-                stake = b.get("stake")
-                price = b.get("odds_dec") or b.get("price")
-                reason = b.get("reason") or ""
-                lines.append(f"- R{race_no} #{rn} {bt} stake={stake} price={price} {reason}".rstrip())
-            else:
-                lines.append(f"- {b}")
-    lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -226,23 +231,30 @@ def build_daily_digest(
             "strategy_digest": digest_payload,
         }
 
-        # Plan 072: optional per-meeting digest artifacts (default OFF).
         if write_per_meeting:
-            slug = _slugify(meeting_id)
-            folder = f"{date_local}_{slug}"
-            meeting_out_dir = out_dir / "meetings" / folder
+            meeting_slug = _slugify(meeting_id)
+            meeting_folder = f"{date_local}_{meeting_slug}"
+            meeting_out_dir = out_dir / "meetings" / meeting_folder
             meeting_out_dir.mkdir(parents=True, exist_ok=True)
 
+            # Deterministic outputs (stable JSON + stable Markdown).
             write_json(meeting_out_dir / "strategy_digest.json", digest_payload)
             (meeting_out_dir / "strategy_digest.md").write_text(_render_meeting_digest_markdown(digest_payload))
 
-            # Relative paths only (portable across environments)
-            meeting_record["digest_json_path"] = str(Path("meetings") / folder / "strategy_digest.json")
-            meeting_record["digest_md_path"] = str(Path("meetings") / folder / "strategy_digest.md")
+            # Store paths relative to out_dir for portability/determinism.
+            meeting_record["digest_json_path"] = str(Path("meetings") / meeting_folder / "strategy_digest.json")
+            meeting_record["digest_md_path"] = str(Path("meetings") / meeting_folder / "strategy_digest.md")
 
         meetings_out.append(meeting_record)
 
-    meetings_out = sorted(meetings_out, key=lambda m: (m.get("date_local") or "0000-00-00", m.get("meeting_id") or "", m.get("source_path") or ""))
+    meetings_out = sorted(
+        meetings_out,
+        key=lambda m: (
+            m.get("date_local") or "0000-00-00",
+            m.get("meeting_id") or "",
+            m.get("source_path") or "",
+        ),
+    )
 
     daily: Dict[str, Any] = {
         "config": {
@@ -272,3 +284,4 @@ def build_daily_digest(
     write_json(out_dir / "daily_digest.json", daily)
     (out_dir / "daily_digest.md").write_text(render_daily_digest_markdown(daily))
     return daily
+
