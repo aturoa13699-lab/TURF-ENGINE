@@ -179,8 +179,21 @@ jobs:
             exit 1
           fi
 
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
       - name: Create publish.json
         if: ${{ always() }}
+        # Must run after deploy so steps.deployment.outputs.page_url is populated.
         run: |
           set -euxo pipefail
           mkdir -p out/diagnostics
@@ -198,18 +211,6 @@ jobs:
         with:
           name: publish_json_${{ steps.date.outputs.run_date }}_${{ inputs.mode }}
           path: out/diagnostics/publish.json
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
 
       - name: Email config check (non-blocking)
         id: email_config
@@ -276,6 +277,7 @@ jobs:
       # Email step: caller must set send_email=true AND provide secrets
       # Note: secrets.* cannot be used in if: conditions for reusable workflows
       - name: Send email (optional)
+        id: send_email
         if: ${{ inputs.send_email && steps.email_config.outputs.can_email == 'true' }}
         continue-on-error: true
         uses: dawidd6/action-send-mail@v3
