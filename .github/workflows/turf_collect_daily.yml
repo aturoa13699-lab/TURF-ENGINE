@@ -1,0 +1,154 @@
+name: TURF Collect Daily Stake Cards
+
+on:
+  schedule:
+    # 17:30 UTC = 04:30 AEDT (before meetings start)
+    - cron: "30 17 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Run date (YYYY-MM-DD, Australia/Sydney). Defaults to today."
+        required: false
+        type: string
+      odds_source:
+        description: "Odds source (none | theoddsapi | betfair)"
+        required: false
+        type: string
+        default: "none"
+      simulate:
+        description: "Run bankroll simulation"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    env:
+      # Map secrets to env vars (never use secrets.* in if:)
+      THEODDSAPI_KEY: ${{ secrets.THEODDSAPI_KEY }}
+      BETFAIR_APP_KEY: ${{ secrets.BETFAIR_APP_KEY }}
+      BETFAIR_USERNAME: ${{ secrets.BETFAIR_USERNAME }}
+      BETFAIR_PASSWORD: ${{ secrets.BETFAIR_PASSWORD }}
+    outputs:
+      run_date: ${{ steps.rundate.outputs.run_date }}
+      has_stake_cards: ${{ steps.check.outputs.has_stake_cards }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+
+      - name: Resolve run date (Australia/Sydney)
+        id: rundate
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            RUN_DATE="${{ github.event.inputs.date }}"
+          else
+            RUN_DATE="$(TZ=Australia/Sydney date +%Y-%m-%d)"
+          fi
+          echo "RUN_DATE=${RUN_DATE}" >> $GITHUB_ENV
+          echo "run_date=${RUN_DATE}" >> $GITHUB_OUTPUT
+          echo "Resolved RUN_DATE=${RUN_DATE}"
+
+      - name: Resolve odds source
+        id: odds
+        run: |
+          ODDS_SOURCE="${{ github.event.inputs.odds_source }}"
+          if [ -z "$ODDS_SOURCE" ]; then
+            ODDS_SOURCE="none"
+          fi
+          echo "ODDS_SOURCE=${ODDS_SOURCE}" >> $GITHUB_ENV
+          echo "odds_source=${ODDS_SOURCE}" >> $GITHUB_OUTPUT
+
+      - name: Resolve simulate flag
+        id: simulate
+        run: |
+          SIMULATE="${{ github.event.inputs.simulate }}"
+          if [ "$SIMULATE" = "true" ]; then
+            SIMULATE_FLAG="--simulate"
+          else
+            SIMULATE_FLAG="--no-simulate"
+          fi
+          echo "SIMULATE_FLAG=${SIMULATE_FLAG}" >> $GITHUB_ENV
+
+      - name: Collect stake cards
+        run: |
+          python -m cli.turf_cli collect-stake-cards \
+            --date "$RUN_DATE" \
+            --out out/stake_cards \
+            --capture-dir data/raw \
+            --odds-source "$ODDS_SOURCE" \
+            $SIMULATE_FLAG \
+            --no-prefer-pro
+
+      - name: Check for stake cards
+        id: check
+        run: |
+          if [ -d "out/stake_cards/$RUN_DATE" ] && [ "$(ls -A out/stake_cards/$RUN_DATE 2>/dev/null)" ]; then
+            echo "has_stake_cards=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_stake_cards=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload artifacts
+        if: steps.check.outputs.has_stake_cards == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: stake-cards-${{ steps.rundate.outputs.run_date }}
+          path: out/stake_cards
+
+  publish-derived:
+    needs: collect
+    if: needs.collect.outputs.has_stake_cards == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download stake cards
+        uses: actions/download-artifact@v4
+        with:
+          name: stake-cards-${{ needs.collect.outputs.run_date }}
+          path: out/stake_cards
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+
+      - name: Generate digest pages
+        run: |
+          RUN_DATE="${{ needs.collect.outputs.run_date }}"
+          DIGEST_DIR="out/stake_cards/digests/$RUN_DATE"
+          if [ -d "$DIGEST_DIR" ]; then
+            python -m turf.digest_pages "$DIGEST_DIR" "public/derived/$RUN_DATE" || true
+          fi
+
+      - name: Upload derived artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: derived-${{ needs.collect.outputs.run_date }}
+          path: public/derived
+          if-no-files-found: ignore
