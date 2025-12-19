@@ -1,0 +1,12 @@
+{
+  "meeting_id": "TEST_RANDWICK",
+  "race_number": 2,
+  "date_local": "2025-12-18",
+  "source": "fixture",
+  "runners": [
+    {"runner_name": "Second Race A", "price_now_dec": 2.90},
+    {"runner_name": "Second Race B", "price_now_dec": 3.40},
+    {"runner_name": "Second Race C", "price_now_dec": 5.20}
+  ],
+  "captured_at": "2025-12-18T10:01:00+11:00"
+}

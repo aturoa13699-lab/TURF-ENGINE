@@ -1,0 +1,13 @@
+{
+  "meeting_id": "TEST_RANDWICK",
+  "race_number": 1,
+  "date_local": "2025-12-18",
+  "source": "fixture",
+  "runners": [
+    {"runner_name": "Fixture Horse A", "price_now_dec": 3.60},
+    {"runner_name": "Fixture Horse B", "price_now_dec": 3.80},
+    {"runner_name": "Fixture Horse C", "price_now_dec": 5.80},
+    {"runner_name": "Fixture Horse D", "price_now_dec": 11.00}
+  ],
+  "captured_at": "2025-12-18T10:00:00+11:00"
+}

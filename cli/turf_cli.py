@@ -553,5 +553,147 @@ def preview(
             typer.echo(f"  - {r['meeting_id']}: HTML={r['html']}, PDF={pdf_info}")
 
 
+@app.command("collect-stake-cards")
+def collect_stake_cards(
+    date: Optional[str] = typer.Option(
+        None,
+        "--date",
+        help="Date in YYYY-MM-DD format (default: Australia/Sydney today)",
+    ),
+    out: pathlib.Path = typer.Option(
+        Path("out/stake_cards"),
+        "--out",
+        help="Output directory for stake cards",
+    ),
+    capture_dir: pathlib.Path = typer.Option(
+        Path("data/raw"),
+        "--capture-dir",
+        help="Directory containing captured RA HTML and odds data",
+    ),
+    odds_source: str = typer.Option(
+        "none",
+        "--odds-source",
+        help="Odds source: none | fixture | theoddsapi | betfair",
+    ),
+    odds_fixtures_dir: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--odds-fixtures-dir",
+        help="Directory containing odds fixture files (for --odds-source fixture)",
+    ),
+    prefer_pro: bool = typer.Option(
+        True,
+        "--prefer-pro/--no-prefer-pro",
+        help="Apply PRO overlay when available",
+    ),
+    render_digest_pages: bool = typer.Option(
+        False,
+        "--render-digest-pages/--no-render-digest-pages",
+        help="Render digest HTML pages to public/derived",
+    ),
+    simulate: bool = typer.Option(
+        False,
+        "--simulate/--no-simulate",
+        help="Run bankroll simulation during digest",
+    ),
+    seed: int = typer.Option(
+        1337,
+        "--seed",
+        help="RNG seed for simulation",
+    ),
+    write_per_meeting: bool = typer.Option(
+        False,
+        "--write-per-meeting/--no-write-per-meeting",
+        help="Write per-meeting digest artifacts",
+    ),
+):
+    """Collect and compile stake cards from captured RA data and market odds.
+
+    This command orchestrates:
+    1. Discover races from captured RA HTML files
+    2. Parse RA data into market snapshots
+    3. Optionally fetch/merge market odds
+    4. Compile Lite stake cards (and PRO overlay if available)
+    5. Write stake cards to output directory
+    6. Generate daily digest from produced stake cards
+
+    For offline operation, capture RA HTML files first under:
+    <capture-dir>/ra/<date>/<meeting_id>/race_<n>.html
+
+    Environment variables for odds sources:
+    - theoddsapi: THEODDSAPI_KEY
+    - betfair: BETFAIR_APP_KEY, BETFAIR_USERNAME, BETFAIR_PASSWORD
+    """
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from turf.collect_pipeline import PipelineConfig, run_pipeline
+    from turf.daily_digest import build_daily_digest
+
+    # Resolve date to Australia/Sydney if not provided
+    if date is None:
+        date = dt.now(ZoneInfo("Australia/Sydney")).date().isoformat()
+
+    typer.echo(f"Collecting stake cards for {date}")
+    typer.echo(f"  capture_dir: {capture_dir}")
+    typer.echo(f"  out: {out}")
+    typer.echo(f"  odds_source: {odds_source}")
+
+    # Build pipeline config
+    config = PipelineConfig(
+        date_local=date,
+        capture_dir=capture_dir,
+        out_dir=out,
+        odds_source=odds_source,
+        odds_fixtures_dir=odds_fixtures_dir,
+        prefer_pro=prefer_pro,
+    )
+
+    # Run pipeline
+    result = run_pipeline(config)
+
+    if result.errors:
+        for err in result.errors:
+            typer.echo(f"  [error] {err}", err=True)
+
+    if not result.stake_card_paths:
+        typer.echo("No stake cards generated.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Generated {len(result.stake_card_paths)} stake card(s):")
+    for path in result.stake_card_paths:
+        typer.echo(f"  - {path}")
+
+    # Generate daily digest from stake cards directory
+    stake_cards_dir = out / date
+    digest_out = out / "digests" / date
+
+    typer.echo(f"Generating daily digest from {stake_cards_dir}")
+    daily = build_daily_digest(
+        stake_cards_dir=stake_cards_dir,
+        out_dir=digest_out,
+        prefer_pro=prefer_pro,
+        write_per_meeting=write_per_meeting,
+        simulate=simulate,
+        seed=seed,
+    )
+    typer.echo(f"Wrote {digest_out / 'daily_digest.json'}")
+
+    # Optionally render digest pages
+    if render_digest_pages:
+        try:
+            from turf.digest_pages import render_digest_pages as do_render
+
+            pages_out = Path("public/derived") / date
+            do_render(digest_out, pages_out)
+            typer.echo(f"Rendered digest pages to {pages_out}")
+        except ImportError:
+            typer.echo("Warning: digest_pages module not available", err=True)
+        except Exception as e:
+            typer.echo(f"Warning: failed to render digest pages: {e}", err=True)
+
+    meetings_count = daily.get("counts", {}).get("meetings_included", 0)
+    typer.echo(f"Done. Processed {meetings_count} meeting(s).")
+
+
 if __name__ == "__main__":
     app()
