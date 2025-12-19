@@ -34,6 +34,8 @@ jobs:
       BETFAIR_APP_KEY: ${{ secrets.BETFAIR_APP_KEY }}
       BETFAIR_USERNAME: ${{ secrets.BETFAIR_USERNAME }}
       BETFAIR_PASSWORD: ${{ secrets.BETFAIR_PASSWORD }}
+      BETFAIR_CERT_PEM_B64: ${{ secrets.BETFAIR_CERT_PEM_B64 }}
+      BETFAIR_KEY_PEM_B64: ${{ secrets.BETFAIR_KEY_PEM_B64 }}
     outputs:
       run_date: ${{ steps.rundate.outputs.run_date }}
       has_stake_cards: ${{ steps.check.outputs.has_stake_cards }}
@@ -52,6 +54,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -e .
+
+      - name: Verify CLI commands exist
+        run: |
+          # Guardrail: verify required CLI commands are available
+          echo "Checking CLI commands..."
+          python -m cli.turf_cli --help | grep -q "collect-stake-cards" || { echo "::error::collect-stake-cards command not found"; exit 1; }
+          python -m cli.turf_cli --help | grep -q "daily-digest" || { echo "::error::daily-digest command not found"; exit 1; }
+          echo "✅ All required CLI commands available"
 
       - name: Resolve run date (Australia/Sydney)
         id: rundate

@@ -268,22 +268,26 @@ class TheOddsAPIAdapter(OddsAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Betfair adapter
+# Betfair adapter with certificate authentication
 # ---------------------------------------------------------------------------
 
 
 class BetfairAdapter(OddsAdapter):
-    """Adapter for Betfair Exchange API.
+    """Adapter for Betfair Exchange API with certificate-based authentication.
 
-    Requires environment variables:
-    - BETFAIR_APP_KEY: Betfair application key
-    - BETFAIR_USERNAME: Betfair username
-    - BETFAIR_PASSWORD: Betfair password
-    OR
-    - BETFAIR_SESSION_TOKEN: Pre-authenticated session token
+    Requires environment variables (or pass as kwargs):
+    - BETFAIR_APP_KEY: Betfair application key (X-Application header)
+    - BETFAIR_USERNAME: Betfair account username
+    - BETFAIR_PASSWORD: Betfair account password
+    - BETFAIR_CERT_PEM_B64: Base64-encoded PEM certificate (.crt)
+    - BETFAIR_KEY_PEM_B64: Base64-encoded PEM private key (.key)
 
-    Note: Betfair uses market IDs for identification. This adapter
-    requires a mapping from RA meeting/race to Betfair market IDs.
+    The adapter performs cert-based SSO login and fetches odds from
+    the Betfair Exchange API. Runner names are matched to RA names
+    using fuzzy matching (rapidfuzz).
+
+    If required secrets are missing, the adapter raises BetfairConfigError
+    with a clear message explaining what's needed.
     """
 
     source_name = "betfair"
@@ -294,22 +298,68 @@ class BetfairAdapter(OddsAdapter):
         username: Optional[str] = None,
         password: Optional[str] = None,
         session_token: Optional[str] = None,
+        strict: bool = True,
     ):
-        self.app_key = app_key or os.environ.get("BETFAIR_APP_KEY")
-        self.username = username or os.environ.get("BETFAIR_USERNAME")
-        self.password = password or os.environ.get("BETFAIR_PASSWORD")
-        self.session_token = session_token or os.environ.get("BETFAIR_SESSION_TOKEN")
-        self._requests = None
+        """Initialize Betfair adapter.
 
-    def _get_requests(self):
-        if self._requests is None:
-            try:
-                import requests
+        Args:
+            app_key: Betfair app key (or from BETFAIR_APP_KEY env)
+            username: Betfair username (or from BETFAIR_USERNAME env)
+            password: Betfair password (or from BETFAIR_PASSWORD env)
+            session_token: Pre-authenticated session token (optional)
+            strict: If True, raise error when secrets are missing.
+                    If False, return None from fetch_odds instead.
+        """
+        self.strict = strict
+        self._session = None
+        self._session_token = session_token
 
-                self._requests = requests
-            except ImportError:
-                return None
-        return self._requests
+        # Store explicit overrides (env vars checked at runtime)
+        self._app_key_override = app_key
+        self._username_override = username
+        self._password_override = password
+
+    def _get_session(self):
+        """Get or create authenticated Betfair session."""
+        if self._session is not None:
+            return self._session
+
+        # Try to import betfair module
+        try:
+            from turf.betfair import (
+                BetfairConfig,
+                BetfairConfigError,
+                authenticate,
+            )
+        except ImportError as e:
+            if self.strict:
+                raise RuntimeError(f"Failed to import turf.betfair: {e}")
+            return None
+
+        # Load config from environment
+        try:
+            config = BetfairConfig.from_env()
+        except BetfairConfigError as e:
+            if self.strict:
+                raise
+            return None
+
+        # Override with explicit values if provided
+        if self._app_key_override:
+            config.app_key = self._app_key_override
+        if self._username_override:
+            config.username = self._username_override
+        if self._password_override:
+            config.password = self._password_override
+
+        # Authenticate
+        try:
+            self._session = authenticate(config)
+            return self._session
+        except Exception as e:
+            if self.strict:
+                raise
+            return None
 
     def fetch_odds(
         self,
@@ -319,25 +369,75 @@ class BetfairAdapter(OddsAdapter):
         *,
         runner_names: Optional[List[str]] = None,
     ) -> Optional[OddsSnapshot]:
-        if not self.app_key:
+        """Fetch odds for a specific race from Betfair.
+
+        Args:
+            meeting_id: RA meeting ID (venue name, e.g., "RANDWICK")
+            race_number: Race number (1-indexed)
+            date_local: Date in YYYY-MM-DD format
+            runner_names: List of runner names from RA for matching
+
+        Returns:
+            OddsSnapshot with matched runner prices, or None if unavailable
+        """
+        # Get authenticated session
+        session = self._get_session()
+        if session is None:
             return None
 
-        requests = self._get_requests()
-        if requests is None:
+        if not runner_names:
+            # Need runner names for matching
             return None
 
-        # NOTE: Real implementation would:
-        # 1. Authenticate with Betfair if no session token
-        # 2. Call listEvents to find horse racing events for date
-        # 3. Match venue name to meeting_id
-        # 4. Call listMarketCatalogue to get market IDs for races
-        # 5. Call listMarketBook to get current prices
-        # 6. Convert selection prices to runner odds
-        #
-        # This is left as a stub for future implementation.
-        # The pipeline will fall back to RA prices.
+        try:
+            from turf.betfair import fetch_race_odds
+        except ImportError:
+            return None
 
-        return None
+        try:
+            race_odds = fetch_race_odds(
+                session,
+                meeting_id,
+                race_number,
+                date_local,
+                runner_names,
+            )
+        except Exception:
+            # Log error but don't crash
+            return None
+
+        if race_odds is None:
+            return None
+
+        # Convert to OddsSnapshot format
+        runners = []
+        warnings = []
+
+        for r in race_odds.runners:
+            price = r.get("price_now_dec")
+            if price is not None:
+                runners.append(
+                    {
+                        "runner_name": r.get("runner_name"),
+                        "betfair_name": r.get("betfair_name"),
+                        "price_now_dec": price,
+                    }
+                )
+
+        if race_odds.unmatched_runners:
+            warnings.append(
+                f"Unmatched runners: {', '.join(race_odds.unmatched_runners)}"
+            )
+
+        return OddsSnapshot(
+            meeting_id=meeting_id,
+            race_number=race_number,
+            date_local=date_local,
+            source="betfair",
+            runners=runners,
+            captured_at=race_odds.captured_at,
+            raw_path=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -346,13 +446,14 @@ class BetfairAdapter(OddsAdapter):
 
 
 def get_odds_adapter(
-    source: str, *, fixtures_dir: Optional[Path] = None, **kwargs
+    source: str, *, fixtures_dir: Optional[Path] = None, strict: bool = False, **kwargs
 ) -> OddsAdapter:
     """Get an odds adapter by source name.
 
     Args:
         source: One of "none", "fixture", "theoddsapi", "betfair"
         fixtures_dir: Required for "fixture" source
+        strict: For Betfair, if True raise on missing secrets; if False return None
         **kwargs: Additional adapter-specific configuration
 
     Returns:
@@ -374,6 +475,7 @@ def get_odds_adapter(
             username=kwargs.get("username"),
             password=kwargs.get("password"),
             session_token=kwargs.get("session_token"),
+            strict=strict,
         )
     else:
         raise ValueError(f"Unknown odds source: {source}")

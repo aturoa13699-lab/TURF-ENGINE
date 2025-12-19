@@ -1,0 +1,155 @@
+name: Betfair Certificate Bootstrap
+
+# One-time workflow to generate Betfair API credentials
+# Run manually when setting up Betfair integration for the first time
+
+on:
+  workflow_dispatch:
+    inputs:
+      key_size:
+        description: "RSA key size (2048 or 4096)"
+        required: false
+        default: "2048"
+        type: choice
+        options:
+          - "2048"
+          - "4096"
+      cert_days:
+        description: "Certificate validity in days"
+        required: false
+        default: "365"
+        type: string
+
+jobs:
+  generate-cert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate RSA private key and self-signed certificate
+        id: generate
+        run: |
+          KEY_SIZE="${{ github.event.inputs.key_size }}"
+          CERT_DAYS="${{ github.event.inputs.cert_days }}"
+
+          echo "Generating ${KEY_SIZE}-bit RSA key and certificate..."
+
+          # Create temp directory
+          mkdir -p betfair_certs
+          cd betfair_certs
+
+          # Generate private key (NEVER output this to logs)
+          openssl genrsa -out client-${KEY_SIZE}.key ${KEY_SIZE} 2>/dev/null
+
+          # Generate self-signed certificate
+          # Betfair accepts self-signed certs for API access
+          openssl req -new -x509 \
+            -key client-${KEY_SIZE}.key \
+            -out client-${KEY_SIZE}.crt \
+            -days ${CERT_DAYS} \
+            -subj "/CN=BetfairAPIClient/O=TurfEngine/C=AU" \
+            2>/dev/null
+
+          # Create base64 versions for GitHub Secrets
+          base64 -w0 client-${KEY_SIZE}.crt > cert_b64.txt
+          base64 -w0 client-${KEY_SIZE}.key > key_b64.txt
+
+          echo "✅ Certificate generated successfully"
+          echo ""
+          echo "=== CERTIFICATE (safe to show) ==="
+          cat client-${KEY_SIZE}.crt
+          echo ""
+          echo "=== END CERTIFICATE ==="
+
+          # Verify the certificate
+          echo ""
+          echo "=== Certificate Details ==="
+          openssl x509 -in client-${KEY_SIZE}.crt -noout -subject -dates
+
+      - name: Package certificate material
+        run: |
+          cd betfair_certs
+
+          # Create a README with instructions
+          cat > README.txt << 'EOF'
+          BETFAIR CERTIFICATE SETUP INSTRUCTIONS
+          ======================================
+
+          This artifact contains your Betfair API certificate and private key.
+
+          FILES:
+          - client-*.crt: Certificate file (upload to Betfair)
+          - client-*.key: Private key file (KEEP SECRET)
+          - cert_b64.txt: Base64-encoded certificate (for GitHub Secrets)
+          - key_b64.txt: Base64-encoded private key (for GitHub Secrets)
+
+          SETUP STEPS:
+
+          1. UPLOAD CERTIFICATE TO BETFAIR:
+             a. Log in to https://developer.betfair.com/
+             b. Go to "My Apps" or "Application Keys"
+             c. Create or edit your application
+             d. Upload the .crt file in the certificate section
+             e. Note your Application Key (X-Application)
+
+          2. ADD GITHUB SECRETS:
+             Add these secrets to your repository:
+
+             BETFAIR_APP_KEY:
+               Your Betfair Application Key from step 1e
+
+             BETFAIR_USERNAME:
+               Your Betfair account username
+
+             BETFAIR_PASSWORD:
+               Your Betfair account password
+
+             BETFAIR_CERT_PEM_B64:
+               Contents of cert_b64.txt
+
+             BETFAIR_KEY_PEM_B64:
+               Contents of key_b64.txt
+
+          3. TEST THE CONNECTION:
+             Trigger the turf_collect_daily workflow manually with
+             odds_source=betfair to verify the connection works.
+
+          SECURITY NOTES:
+          - Delete this artifact after copying the values
+          - Never commit the private key to the repository
+          - The private key should only exist in GitHub Secrets
+          - Regenerate if you suspect the key is compromised
+
+          EOF
+
+          echo "README created with setup instructions"
+
+      - name: Upload certificate material
+        uses: actions/upload-artifact@v4
+        with:
+          name: betfair_cert_material
+          path: betfair_certs/
+          retention-days: 1  # Short retention for security
+
+      - name: Summary
+        run: |
+          echo "## 🎯 Betfair Certificate Generated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Certificate material has been uploaded as an artifact." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Download the artifact** \`betfair_cert_material\` from this workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Upload certificate to Betfair:**" >> $GITHUB_STEP_SUMMARY
+          echo "   - Go to [Betfair Developer Portal](https://developer.betfair.com/)" >> $GITHUB_STEP_SUMMARY
+          echo "   - Navigate to 'My Apps' or 'Application Keys'" >> $GITHUB_STEP_SUMMARY
+          echo "   - Upload the \`.crt\` file from the artifact" >> $GITHUB_STEP_SUMMARY
+          echo "   - Note your Application Key" >> $GITHUB_STEP_SUMMARY
+          echo "3. **Add GitHub Secrets:**" >> $GITHUB_STEP_SUMMARY
+          echo "   - \`BETFAIR_APP_KEY\`: Your application key" >> $GITHUB_STEP_SUMMARY
+          echo "   - \`BETFAIR_USERNAME\`: Your Betfair username" >> $GITHUB_STEP_SUMMARY
+          echo "   - \`BETFAIR_PASSWORD\`: Your Betfair password" >> $GITHUB_STEP_SUMMARY
+          echo "   - \`BETFAIR_CERT_PEM_B64\`: Contents of \`cert_b64.txt\`" >> $GITHUB_STEP_SUMMARY
+          echo "   - \`BETFAIR_KEY_PEM_B64\`: Contents of \`key_b64.txt\`" >> $GITHUB_STEP_SUMMARY
+          echo "4. **Test** by running the collect workflow with \`--odds-source betfair\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **The artifact expires in 1 day for security.** Download it now!" >> $GITHUB_STEP_SUMMARY
